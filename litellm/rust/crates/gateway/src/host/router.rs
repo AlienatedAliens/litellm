@@ -7,9 +7,11 @@ use litellm_gateway_inference::{
 };
 use litellm_router_core::{
     Attempt, AttemptError, AttemptFailure, ConfigError, Deployment, HostStep, Reached, RouterEvent,
-    RouterHost, RoutingContext, SelectStage, Served,
+    RouterHost, RoutingContext, SelectStage, Served, precall::PreCallFacts,
 };
+use tokio::sync::OnceCell;
 
+use super::precall::{self, Windows};
 use crate::{
     Gateway,
     host::{NativeHost, NativeRows},
@@ -19,12 +21,17 @@ impl NativeHost {
     /// What a call served by `reached` is over: the first of its steps [`NativeRouterHost`] does
     /// not answer as the proxy does, and `None` when it answers them all. `admit` leaves every
     /// such call to Python.
+    ///
+    /// The pre-call facts are answered for a group whose every deployment has a window in
+    /// [`Windows`], since the proxy's own cost map may hold a window the native host reads none
+    /// for.
     pub(crate) fn unanswered(&self, reached: &Reached) -> Option<Box<str>> {
-        reached.steps.first().map(|step| match step {
-            HostStep::Pick(..)
-            | HostStep::PreCallFacts
-            | HostStep::HealthStates
-            | HostStep::FallbackParams(_) => format!("router_settings.{}", step.setting()).into(),
+        reached.steps.iter().find_map(|step| match step {
+            HostStep::PreCallFacts => (!self.windows.cover(&reached.group))
+                .then(|| "model_list.model_info.max_input_tokens".into()),
+            HostStep::Pick(..) | HostStep::HealthStates | HostStep::FallbackParams(_) => {
+                Some(format!("router_settings.{}", step.setting()).into())
+            }
         })
     }
 }
@@ -35,6 +42,8 @@ pub struct NativeRouterHost<'a, A> {
     pub(super) gateway: &'a Gateway,
     pub(super) identity: &'a Authenticated<NativeRows>,
     pub(super) route: &'a A,
+    pub(super) windows: &'a Windows,
+    pub(super) prompt_tokens: OnceCell<Option<i64>>,
 }
 
 impl<A: RouteAttempt> RouterHost for NativeRouterHost<'_, A> {
@@ -59,6 +68,15 @@ impl<A: RouteAttempt> RouterHost for NativeRouterHost<'_, A> {
             step: "a selection stage",
         }
         .into())
+    }
+
+    async fn pre_call_facts(
+        &self,
+        _ctx: &RoutingContext<'_>,
+        candidates: &[Arc<Deployment>],
+    ) -> Result<PreCallFacts, litellm_router_core::Error> {
+        let prompt = self.route.prompt();
+        Ok(precall::facts(self.windows, prompt, &self.prompt_tokens, candidates).await)
     }
 
     async fn allow_fallback(&self, target: &str) -> Result<bool, AttemptError> {

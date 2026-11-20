@@ -6,11 +6,15 @@
 pub mod auth;
 mod boot;
 mod capacity;
+mod model_info;
+mod precall;
+mod prompt_estimate;
 mod router;
 
 pub use auth::NativeRows;
 pub use boot::NativeBootHost;
 pub use capacity::NativeCapacityHost;
+pub use precall::Windows;
 pub use router::NativeRouterHost;
 
 use std::sync::Arc;
@@ -21,6 +25,7 @@ use litellm_gateway_inference::{
     CallType,
     routing::{Host, RouteAttempt},
 };
+use tokio::sync::OnceCell;
 
 use crate::{Gateway, callbacks, callbacks::Callbacks};
 
@@ -35,15 +40,17 @@ pub(crate) fn layers(identity: &Authenticated<NativeRows>) -> impl Iterator<Item
     key.into_iter()
 }
 
-/// The host the gateway's routes are served through.
+/// The host the gateway's routes are served through, over each deployment's context window as
+/// read at boot.
 #[derive(Clone, Default)]
 pub struct NativeHost {
     callbacks: Arc<Callbacks>,
+    windows: Arc<Windows>,
 }
 
 impl NativeHost {
-    pub fn new(callbacks: Arc<Callbacks>) -> Self {
-        Self { callbacks }
+    pub fn new(callbacks: Arc<Callbacks>, windows: Arc<Windows>) -> Self {
+        Self { callbacks, windows }
     }
 }
 
@@ -73,6 +80,8 @@ impl Host for NativeHost {
             gateway,
             identity,
             route,
+            windows: &self.windows,
+            prompt_tokens: OnceCell::new(),
         }
     }
 }
