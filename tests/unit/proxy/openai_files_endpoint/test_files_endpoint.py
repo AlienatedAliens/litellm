@@ -6734,6 +6734,63 @@ def _upload_payroll_through_the_shared_model_as_team_a() -> httpx.Response:
     )
 
 
+def test_wildcard_upload_is_listed_for_its_model_and_provider(
+    plain_upload_proxy: _ManagedFileTableOverRows, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "litellm.proxy.proxy_server.llm_router",
+        Router(model_list=[
+            {"model_name": "*", "litellm_params": {"model": "openai/*", "api_key": "test-key"}},
+            {"model_name": "explicit", "litellm_params": {"model": "anthropic/test", "api_key": "test-key"}},
+        ]),
+    )
+    owner: Final = _as_team_member("user-a", "team-a")
+    with respx.mock(assert_all_called=False) as upstream:
+        _mock_shared_account(upstream, _OPENAI_ACCOUNT)
+        _mock_shared_account(upstream, _ANTHROPIC_ACCOUNT)
+
+        def upload(model: str) -> str:
+            response: Final = client.post(
+                "/v1/files", data={"purpose": "user_data", "model": model},
+                files={"file": ("test.txt", b"test", "text/plain")}, headers=owner,
+            )
+            assert response.status_code == 200, response.text
+            return str(response.json()["id"])
+
+        older, explicit, newer = (upload(model) for model in ("routed-a", "explicit", "routed-b"))
+        assert _listed_ids(client.get("/v1/files?model=routed-a", headers=owner)) == [older]
+        assert _listed_ids(client.get("/v1/files?provider=anthropic", headers=owner)) == [explicit]
+        first: Final = client.get("/v1/files?provider=openai&limit=1", headers=owner)
+        assert _listed_ids(first) == [newer]
+        assert first.json()["has_more"] is True
+        next_page: Final = client.get("/v1/files", params={"provider": "openai", "after": newer}, headers=owner)
+        assert _listed_ids(next_page) == [older]
+        assert next_page.json()["has_more"] is False
+        assert _listed_ids(client.get("/v1/files?provider=openai", headers=_as_team_member("user-b", "team-b"))) == []
+
+
+def test_managed_listing_skips_expired_rows_in_both_cursor_directions(
+    plain_upload_proxy: _ManagedFileTableOverRows, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now: Final = 2000000000
+    monkeypatch.setattr("litellm_enterprise.proxy.hooks.managed_files.time", SimpleNamespace(time=lambda: now))
+    for index, expiry in enumerate((now - 1, None, now, now + 1, now - 1)):
+        row: Final = _managed_file_row(f"f{index}", model_mappings={"gpt-3.5-turbo-id": f"p{index}"})
+        if expiry is not None:
+            row.file_object["expires_at"] = expiry
+        plain_upload_proxy.rows.append(row)
+    owner: Final = _as_team_member("test-user", "team-a")
+
+    def page(**params: str) -> tuple[list[str], bool]:
+        response: Final = client.get("/v1/files", params={"provider": "openai", "limit": "1", **params}, headers=owner)
+        return _listed_ids(response), response.json()["has_more"]
+
+    assert page() == (["f1"], True)
+    assert page(after="f1") == (["f3"], False)
+    assert page(before_id="f3") == (["f1"], False)
+    assert page(after="f3") == ([], False)
+
+
 @pytest.mark.parametrize("id_kind", ["raw provider id", "model-routed id"])
 def test_another_team_cannot_read_or_delete_a_model_routed_upload(
     plain_upload_proxy: _ManagedFileTableOverRows, id_kind: str

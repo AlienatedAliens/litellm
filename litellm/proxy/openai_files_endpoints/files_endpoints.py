@@ -1934,6 +1934,12 @@ def _files_on_provider(llm_router: Router | None, custom_llm_provider: str) -> _
     )
     if llm_router is None:
         return _ListedFiles(FileListModelScope(model_mapping_keys), custom_llm_provider)
+
+    @functools.lru_cache(maxsize=256)
+    def routes_uploaded_model_name(model: str) -> bool:
+        deployment: Final = llm_router.registry().credentials(model, form="deployment")
+        return deployment is not None and _resolved_deployment_provider(deployment) == custom_llm_provider
+
     return _ListedFiles(
         FileListModelScope(
             model_mapping_keys,
@@ -1942,6 +1948,9 @@ def _files_on_provider(llm_router: Router | None, custom_llm_provider: str) -> _
                 llm_router,
                 custom_llm_provider,
                 frozenset(deployment.model_name for deployment in deployments),
+            ),
+            routes_uploaded_model_name=(
+                routes_uploaded_model_name if any("*" in deployment.model_name for deployment in deployments) else None
             ),
         ),
         custom_llm_provider,
@@ -1952,7 +1961,8 @@ def _files_serving_model(llm_router: Router, model: str) -> _ListedFiles:
     deployments: Final = _deployments_serving_model(llm_router, model)
     providers: Final = frozenset(map(_resolved_deployment_provider, deployments))
     return _ListedFiles(
-        FileListModelScope(_model_mapping_keys(deployments)), next(iter(providers)) if len(providers) == 1 else None
+        FileListModelScope(_model_mapping_keys(deployments) | {model}),
+        next(iter(providers)) if len(providers) == 1 else None,
     )
 
 

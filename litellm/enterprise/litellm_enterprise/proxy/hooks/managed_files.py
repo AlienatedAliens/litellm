@@ -557,6 +557,15 @@ class _ScopedFileRow(BaseModel):
 _SCOPED_FILE_ROWS: Final = TypeAdapter(tuple[_ScopedFileRow, ...])
 
 
+def _file_in_scope(row: _ListedFileRow, scope: FileListModelScope | None) -> bool:
+    if scope is None or scope.holds(row.model_mappings, stored=row.storage_backend is not None):
+        return True
+    if scope.routes_uploaded_model_name is None:
+        return False
+    model: Final = decode_model_from_file_id(row.unified_file_id)
+    return model is not None and model in row.model_mappings and scope.routes_uploaded_model_name(model)
+
+
 def _owner_condition(owner_filter: Mapping[str, object]) -> tuple[str, tuple[str, ...]]:
     match owner_filter:
         case {"OR": [{"created_by": str() as user_id}, {"team_id": str() as team_id}]}:
@@ -2587,14 +2596,11 @@ class _PROXY_LiteLLMManagedFiles(CustomLogger, BaseFileEndpoints):
         every file on the proxy still reads one bounded page at a time.
         ``after`` pages toward older files and ``before`` toward newer ones,
         each page still ordered newest first.
-        ``model_scope`` is applied in the query, so only rows whose
-        ``model_mappings`` name one of its deployment ids or model names, and
-        storage-backed rows, leave the database; a storage-backed row then
-        stays only when its model name is one the router sends to the listed
-        provider. ``purpose`` is applied after parsing, because the managed
-        file table keeps it inside the ``file_object`` blob instead of a
-        column. Rows
-        whose blob will not parse drop out there too, so a chunk of rows can
+        Exact model keys are filtered in the query. A provider with a wildcard
+        deployment can also match concrete model names saved at upload, so its
+        listing resolves those names while paging through the caller's rows.
+        Expiry and purpose are checked against the stored file object. Rows
+        whose object will not parse drop out there too, so a chunk of rows can
         yield fewer matches than the page holds. Successive chunks are read
         until the page is full or the caller's rows run out, which keeps
         ``data`` non-empty while matches remain and its last id usable as the
@@ -2639,6 +2645,7 @@ class _PROXY_LiteLLMManagedFiles(CustomLogger, BaseFileEndpoints):
         if model_scope is not None and not model_scope.model_mapping_keys:
             return FileListPage.model_validate(build_list_page([]))
 
+        now: Final = time.time()
         page_size: Final = min(limit or MAX_FILE_LIST_LIMIT, MAX_FILE_LIST_LIMIT)
         matches: Final[List[OpenAIFileObject]] = []
         cursor_id = cursor
@@ -2651,7 +2658,7 @@ class _PROXY_LiteLLMManagedFiles(CustomLogger, BaseFileEndpoints):
                 await _scoped_file_rows(
                     database, owner_filter, model_scope.model_mapping_keys, cursor_id, direction, chunk_size
                 )
-                if model_scope is not None
+                if model_scope is not None and model_scope.routes_uploaded_model_name is None
                 else await database.litellm_managedfiletable.find_many(
                     where=owner_filter,
                     take=chunk_size,
@@ -2662,10 +2669,9 @@ class _PROXY_LiteLLMManagedFiles(CustomLogger, BaseFileEndpoints):
             matches.extend(
                 _public_file_object(parsed_file_object, row.unified_file_id)
                 for row in chunk
-                if (
-                    model_scope is None or model_scope.holds(row.model_mappings, stored=row.storage_backend is not None)
-                )
+                if _file_in_scope(row, model_scope)
                 and (parsed_file_object := _parse_managed_file_object(row.file_object, row.unified_file_id)) is not None
+                and (parsed_file_object.expires_at is None or parsed_file_object.expires_at > now)
                 and (purpose is None or parsed_file_object.purpose == purpose)
             )
             if len(chunk) < chunk_size:
