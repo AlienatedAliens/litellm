@@ -462,7 +462,7 @@ async def _forget_recorded_owner(proxy_logging_obj: ProxyLogging, file_id: str) 
     candidates: Final = await repository.table.find_many(
         where={
             "OR": [
-                {"unified_file_id": {"in": spellings}},
+                {"unified_file_id": {"in": spellings}},  # bounded-ok: one id plus three forms of up to three reductions
                 {"flat_model_file_ids": {"hasSome": spellings}},
             ]
         }
