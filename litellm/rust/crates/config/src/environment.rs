@@ -42,6 +42,13 @@ pub struct Environment {
     pub default_cooldown_redis_read_interval_seconds: Option<f64>,
     #[serde_as(as = "UintOrUnset")]
     pub default_max_redis_batch_cache_size: Option<u64>,
+    pub litellm_local_model_cost_map: Flag,
+    pub litellm_offline_mode: Flag,
+    #[serde_as(as = "UintOrUnset")]
+    pub model_cost_map_min_model_count: Option<u64>,
+    #[serde_as(as = "FloatOrUnset")]
+    pub model_cost_map_max_shrink_ratio: Option<f64>,
+    pub aws_region_name: Option<String>,
 }
 
 impl Environment {

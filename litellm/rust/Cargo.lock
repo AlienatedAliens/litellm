@@ -4101,6 +4101,7 @@ dependencies = [
 name = "litellm-gateway"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "axum",
  "envy",
  "flate2",
@@ -4126,6 +4127,7 @@ dependencies = [
  "litellm-llms",
  "litellm-llms-types",
  "litellm-model-catalog",
+ "litellm-model-catalog-refresh",
  "litellm-python-compat",
  "litellm-redis-client",
  "litellm-redis-connect",
@@ -4226,6 +4228,7 @@ dependencies = [
 name = "litellm-gateway-inference"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "axum",
  "bytes",
  "futures-util",

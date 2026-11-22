@@ -1,6 +1,7 @@
 mod admit;
 mod boot;
 mod callbacks;
+mod cost_map;
 mod db;
 mod error;
 mod health;
@@ -12,6 +13,7 @@ mod resources;
 mod state;
 pub use admit::{Admit, Reason, Refused};
 pub use callbacks::{Callbacks, Unregistrable};
+pub use cost_map::CostMapRefresh;
 pub use error::Error;
 pub use redis::RedisClients;
 pub use resources::Resources;
@@ -31,7 +33,7 @@ use litellm_http::{
     ClientVariant, HttpClientPool, HttpSettings, HttpSettingsLayer, Resolution,
     media::PublicDnsResolver,
 };
-use litellm_model_catalog::{BUNDLED_REGISTRY, Catalog};
+use litellm_model_catalog::CostMap;
 use litellm_secrets::{OidcResolver, SecretManagerState, SecretResolver};
 
 /// The config at `path`, its `os.environ/` references read from the process environment.
@@ -60,8 +62,7 @@ pub async fn build_inference(
     resources: &Resources,
     routing: RoutingCache,
 ) -> Result<Arc<Gateway>, Error> {
-    let catalog = Catalog::parse(BUNDLED_REGISTRY)?.value;
-    let (router, shaping) = boot::router(config, &catalog).await?;
+    let (router, shaping) = boot::router(config, CostMap::bundled().catalog()).await?;
     Ok(Arc::new(Gateway::new(
         resources.core.clone(),
         resources.http.clone(),

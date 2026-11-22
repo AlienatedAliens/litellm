@@ -15,7 +15,7 @@ use axum::{
 };
 use litellm_config::{Config, Environment};
 use litellm_env::Lookup;
-use litellm_gateway::{Admit, AppState, Refused, Resources};
+use litellm_gateway::{Admit, AppState, CostMapRefresh, Refused, Resources};
 use litellm_tracing::{Level, Logger, Metadata, Record, Sink};
 use serde_json::json;
 use tower::{Layer, Service};
@@ -76,6 +76,7 @@ async fn standalone(
     let config = litellm_gateway::load_config(settings.litellm_config).await?;
     let state = AppState::build(&config, environment).await?;
     let admit = Arc::new(Admit::new(&config, environment, &state));
+    refresh_cost_map(environment, &state, &admit, &config)?;
     let app = alone(native(state.clone(), &config, environment), admit);
     let listener = tokio::net::TcpListener::bind((settings.host.as_str(), settings.port)).await?;
 
@@ -203,6 +204,9 @@ async fn in_front_of_python(
     let stdin_closed = litellm_gateway_forward::input_closed(std::io::stdin());
     let loaded = pythons_config(forward.config.as_deref()).await;
     let (config, state, admit) = native_state(loaded, environment).await?;
+    if let Some(admit) = &admit {
+        refresh_cost_map(environment, &state, admit, &config)?;
+    }
     let ran = litellm_gateway_forward::run(
         forward,
         native(state.clone(), &config, environment),
@@ -214,6 +218,19 @@ async fn in_front_of_python(
     .await;
     state.close().await;
     Ok(ran?)
+}
+
+/// Installs the remote cost map in the background once it is read, as Python's import does.
+fn refresh_cost_map(
+    environment: &Environment,
+    state: &AppState,
+    admit: &Arc<Admit>,
+    config: &Config,
+) -> Result<(), litellm_gateway::Error> {
+    if let Some(refresh) = CostMapRefresh::new(config, environment, state)? {
+        tokio::spawn(refresh.run(state.clone(), admit.clone(), config.clone()));
+    }
+    Ok(())
 }
 
 /// The native app, which both modes build here so they cannot differ in its layers. `admit` goes
