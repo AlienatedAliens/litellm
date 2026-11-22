@@ -5481,7 +5481,7 @@ def _managed_file_row(
 
 def _field_matches(value: object, expected: object) -> bool:
     if isinstance(expected, dict):
-        expected_fields = cast(dict[str, object], expected)
+        expected_fields: Final = cast(dict[str, object], expected)
         if "in" in expected_fields:
             return value in cast(Iterable[object], expected_fields["in"])
         if "equals" in expected_fields:
@@ -6769,6 +6769,27 @@ def test_wildcard_upload_is_listed_for_its_model_and_provider(
         assert _listed_ids(client.get("/v1/files?provider=openai", headers=_as_team_member("user-b", "team-b"))) == []
 
 
+def test_legacy_raw_file_stays_listed_when_its_model_moves_to_a_wildcard(
+    plain_upload_proxy: _ManagedFileTableOverRows, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner: Final = _as_team_member("test-user", "team-a")
+    plain_upload_proxy.rows.extend((
+        _managed_file_row("file-legacy", model_mappings={"gpt-3.5-turbo": "file-legacy"}),
+        _managed_file_row("file-direct", model_mappings={"_provider_upload_anthropic": "file-direct"}),
+        _managed_file_row("managed-id", model_mappings={"retired-deployment": "file-managed"}),
+        _managed_file_row("passthrough-id", model_mappings={"_passthrough_anthropic": "file-passthrough"}),
+    ))
+    assert _listed_ids(client.get("/v1/files?provider=openai", headers=owner)) == ["file-legacy"]
+    monkeypatch.setattr(
+        "litellm.proxy.proxy_server.llm_router",
+        Router(model_list=[{"model_name": "*", "litellm_params": {"model": "openai/*", "api_key": "test-key"}}]),
+    )
+    assert _listed_ids(client.get("/v1/files?provider=openai", headers=owner)) == ["file-legacy"]
+    assert _listed_ids(client.get("/v1/files?model=gpt-3.5-turbo", headers=owner)) == ["file-legacy"]
+    assert "file-legacy" not in _listed_ids(client.get("/v1/files?provider=anthropic", headers=owner))
+    assert _listed_ids(client.get("/v1/files?provider=openai", headers=_as_team_member("other", "team-b"))) == []
+
+
 def test_managed_listing_skips_expired_rows_in_both_cursor_directions(
     plain_upload_proxy: _ManagedFileTableOverRows, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -6834,7 +6855,7 @@ def _recorded_file_for_cleanup(
     flat_model_file_ids: list[str],
     storage_backend: str | None = None,
 ) -> SimpleNamespace:
-    file_object = OpenAIFileObject(
+    file_object: Final = OpenAIFileObject(
         id=unified_file_id,
         object="file",
         bytes=15,
@@ -6924,7 +6945,7 @@ def test_successful_file_delete_removes_owner_listing_by_supported_id_spelling(
     query: str,
     provider: str,
 ) -> None:
-    row = _recorded_file_for_cleanup(unified_file_id, model_mappings, flat_ids)
+    row: Final = _recorded_file_for_cleanup(unified_file_id, model_mappings, flat_ids)
     plain_upload_proxy.rows.append(row)
     if provider == "gemini":
         monkeypatch.setattr(
@@ -6934,7 +6955,7 @@ def test_successful_file_delete_removes_owner_listing_by_supported_id_spelling(
                 {"custom_llm_provider": "gemini", "api_key": "gemini-test-key"},
             ],
         )
-    provider_delete = AsyncMock(return_value={"id": request_file_id, "object": "file", "deleted": True})
+    provider_delete: Final = AsyncMock(return_value={"id": request_file_id, "object": "file", "deleted": True})
     monkeypatch.setattr(litellm, "afile_delete", provider_delete)
 
     listed_before: Final = client.get(f"/v1/files?provider={provider}", headers=_as_team_member("user-a", "team-a"))
@@ -6955,16 +6976,16 @@ def test_successful_file_delete_removes_owner_listing_by_supported_id_spelling(
 def test_delete_one_model_copy_preserves_sibling_ownership_and_denies_cross_team_content(
     plain_upload_proxy: _ManagedFileTableOverRows, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    file_a = "file-model-copy-a"
-    file_b = "file-model-copy-b"
-    unified_file_id = encode_file_id_with_model(file_id=file_a, model="gpt-3.5-turbo")
-    row = _recorded_file_for_cleanup(
+    file_a: Final = "file-model-copy-a"
+    file_b: Final = "file-model-copy-b"
+    unified_file_id: Final = encode_file_id_with_model(file_id=file_a, model="gpt-3.5-turbo")
+    row: Final = _recorded_file_for_cleanup(
         unified_file_id,
         {"gpt-3.5-turbo": file_a, "gpt-4o": file_b},
         [file_a, file_b],
     )
     plain_upload_proxy.rows.append(row)
-    provider_delete = AsyncMock(return_value={"id": file_a, "object": "file", "deleted": True})
+    provider_delete: Final = AsyncMock(return_value={"id": file_a, "object": "file", "deleted": True})
     monkeypatch.setattr(litellm, "afile_delete", provider_delete)
 
     deleted: Final = client.delete(
@@ -6990,8 +7011,8 @@ def test_delete_one_model_copy_preserves_sibling_ownership_and_denies_cross_team
 def test_successful_provider_delete_keeps_a_storage_backed_owner_row(
     plain_upload_proxy: _ManagedFileTableOverRows, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    file_id = "file-storage-cleanup"
-    row = _recorded_file_for_cleanup(
+    file_id: Final = "file-storage-cleanup"
+    row: Final = _recorded_file_for_cleanup(
         file_id,
         {"gpt-3.5-turbo-id": file_id},
         [file_id],
@@ -7009,8 +7030,8 @@ def test_successful_provider_delete_keeps_a_storage_backed_owner_row(
 def test_failed_provider_delete_keeps_the_owner_row(
     plain_upload_proxy: _ManagedFileTableOverRows, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    file_id = "file-provider-delete-failure"
-    row = _recorded_file_for_cleanup(file_id, {"gpt-3.5-turbo-id": file_id}, [file_id])
+    file_id: Final = "file-provider-delete-failure"
+    row: Final = _recorded_file_for_cleanup(file_id, {"gpt-3.5-turbo-id": file_id}, [file_id])
     plain_upload_proxy.rows.append(row)
     monkeypatch.setattr(litellm, "afile_delete", AsyncMock(side_effect=RuntimeError("provider delete failed")))
 
@@ -7023,11 +7044,11 @@ def test_failed_provider_delete_keeps_the_owner_row(
 def test_conditional_owner_delete_preserves_a_copy_added_after_candidate_lookup(
     plain_upload_proxy: _ManagedFileTableOverRows, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    file_id = "file-before-concurrent-copy"
-    concurrent_file_id = "file-added-concurrently"
-    row = _recorded_file_for_cleanup(file_id, {"gpt-3.5-turbo": file_id}, [file_id])
+    file_id: Final = "file-before-concurrent-copy"
+    concurrent_file_id: Final = "file-added-concurrently"
+    row: Final = _recorded_file_for_cleanup(file_id, {"gpt-3.5-turbo": file_id}, [file_id])
     plain_upload_proxy.rows.append(row)
-    original_delete_many = plain_upload_proxy.delete_many
+    original_delete_many: Final = plain_upload_proxy.delete_many
 
     async def add_copy_before_delete(where: dict[str, object]) -> int:
         row.model_mappings["gpt-4o"] = concurrent_file_id

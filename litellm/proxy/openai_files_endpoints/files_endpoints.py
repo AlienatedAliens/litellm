@@ -468,15 +468,14 @@ async def _forget_recorded_owner(proxy_logging_obj: ProxyLogging, file_id: str) 
         }
     )
     for candidate in candidates:
-        flat_model_file_ids = list(candidate.flat_model_file_ids)
         if candidate.storage_backend is not None or any(
-            provider_id not in spellings for provider_id in flat_model_file_ids
+            provider_id not in spellings for provider_id in candidate.flat_model_file_ids
         ):
             continue
         await repository.table.delete_many(
             where={
                 "unified_file_id": candidate.unified_file_id,
-                "flat_model_file_ids": {"equals": flat_model_file_ids},
+                "flat_model_file_ids": {"equals": list(candidate.flat_model_file_ids)},
                 "storage_backend": None,
             }
         )
@@ -578,7 +577,7 @@ async def route_create_file(
             )
 
             # Create the file with model credentials
-            response: OpenAIFileObject = await litellm.acreate_file(
+            response: Final[OpenAIFileObject] = await litellm.acreate_file(
                 **upload_request,
                 custom_llm_provider=credentials["custom_llm_provider"],
             )

@@ -80,6 +80,7 @@ from litellm.proxy.litellm_pre_call_utils import (
 from litellm.proxy.openai_files_endpoints.common_utils import (
     BATCH_CREATE_HIDDEN_PARAM,
     FILE_LIST_CONTINUATION_CHUNK_SIZE,
+    PROVIDER_UPLOAD_MODEL_PREFIX,
     TeamProviderDeployment,
     _is_base64_encoded_unified_file_id,
     apply_unified_file_ids,
@@ -563,7 +564,17 @@ def _file_in_scope(row: _ListedFileRow, scope: FileListModelScope | None) -> boo
     if scope.routes_uploaded_model_name is None:
         return False
     model: Final = decode_model_from_file_id(row.unified_file_id)
-    return model is not None and model in row.model_mappings and scope.routes_uploaded_model_name(model)
+    if model is not None:
+        return model in row.model_mappings and scope.routes_uploaded_model_name(model)
+    # Legacy load-balanced uploads saved the raw ID under a single model name.
+    if row.storage_backend is not None or len(row.model_mappings) != 1:
+        return False
+    model_key: Final = next(iter(row.model_mappings))
+    return (
+        row.model_mappings[model_key] == row.unified_file_id
+        and not model_key.startswith(PROVIDER_UPLOAD_MODEL_PREFIX)
+        and scope.routes_uploaded_model_name(model_key)
+    )
 
 
 def _owner_condition(owner_filter: Mapping[str, object]) -> tuple[str, tuple[str, ...]]:
