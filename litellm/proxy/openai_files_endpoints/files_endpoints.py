@@ -565,7 +565,7 @@ async def route_create_file(
                         _rewrite_alias_rows_to_deployment_model,
                         _create_file_request["file"],
                         model,
-                        credentials["model"],
+                        cast(str, credentials["model"]),  # cast-ok: the router supplies LiteLLM_Params.model
                         credentials["custom_llm_provider"],
                         rewrite_spool,
                     ),
