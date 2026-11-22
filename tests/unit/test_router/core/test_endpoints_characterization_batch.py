@@ -4,10 +4,11 @@ deployment), batches (create, retrieve across deployments, cancel, list), batch 
 fastest-response completion, the scheduler (priority) and prompt-management model groups.
 """
 
-import re
+import asyncio
 import datetime
 import io
 import json
+import re
 from collections.abc import Callable, Mapping
 from types import SimpleNamespace
 from typing import Final
@@ -15,8 +16,10 @@ from typing import Final
 import pytest
 
 import litellm
+from litellm.litellm_core_utils.batch_utils import routed_file_upload_recorder
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLogging
 from litellm.router_core import RouterCore
+from litellm.types.llms.openai import OpenAIFileObject
 from litellm.types.utils import LiteLLMBatch, ModelResponse
 from tests.unit.test_router.core.endpoints_helpers import EndpointHost
 from tests.unit.test_router.core.scripted_host import ScriptedHost, bad_request, deployment
@@ -74,6 +77,43 @@ async def test_acreate_file_returns_the_first_response_with_the_deployment_file_
     assert response in (first, second)
     assert response._hidden_params["model_file_id_mapping"] == {"d1": "file-1", "d2": "file-2"}
     assert "model_id" not in response._hidden_params
+
+
+async def test_failed_fanout_waits_for_the_successful_copy_to_record_its_dispatched_provider(
+    make_core: MakeCore, host: EndpointHost
+) -> None:
+    loop: Final = asyncio.get_running_loop()
+    recorded: Final = asyncio.Future[tuple[str, str]]()
+    release_write: Final = asyncio.Event()
+    failure_delivered: Final = asyncio.Event()
+
+    def reject(**kwargs: object) -> RuntimeError:  # kwargs-ok: the scripted upstream receives the request
+        task: Final = asyncio.current_task()
+        assert task is not None
+        task.add_done_callback(lambda _: loop.call_soon(failure_delivered.set))
+        return RuntimeError("rejected upload")
+
+    async def record(file: OpenAIFileObject, provider: str) -> None:
+        await release_write.wait()
+        recorded.set_result((file.id, provider))
+
+    host.answer("openai/d1", reject)
+    host.answer("openai/d2", OpenAIFileObject(id="file-2", bytes=8, created_at=1, filename="batch", purpose="batch"))
+    core: Final = make_core(model_list=TWO_DEPLOYMENTS, num_retries=0)
+    token: Final = routed_file_upload_recorder.set(record)
+    try:
+        upload: Final = asyncio.create_task(
+            core.acreate_file(model="g", file=_jsonl(), purpose="batch", custom_llm_provider="azure")
+        )
+        await failure_delivered.wait()
+        assert not upload.done()
+        release_write.set()
+        with pytest.raises(RuntimeError, match="rejected upload"):
+            await upload
+        assert recorded.result() == ("file-2", "azure")
+    finally:
+        release_write.set()
+        routed_file_upload_recorder.reset(token)
 
 
 async def test_acreate_file_rewrites_the_jsonl_model_to_each_deployment_model(make_core: MakeCore, host: EndpointHost):

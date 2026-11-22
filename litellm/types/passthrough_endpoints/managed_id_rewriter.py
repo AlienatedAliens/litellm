@@ -110,6 +110,7 @@ class ManagedFileIdWriter(Protocol):
         litellm_parent_otel_span: object,
         model_mappings: dict[str, str],
         user_api_key_dict: UserAPIKeyAuth,
+        upload_provider: str | None = None,
     ) -> None: ...
 
 

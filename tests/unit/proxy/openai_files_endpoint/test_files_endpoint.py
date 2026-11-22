@@ -17,6 +17,7 @@ import pytest
 import respx
 import httpx
 from fastapi.testclient import TestClient
+from openai.types.file_deleted import FileDeleted
 from pytest_mock import MockerFixture
 
 
@@ -5475,6 +5476,7 @@ def _managed_file_row(
         created_by=created_by,
         team_id=team_id,
         model_mappings=model_mappings or {},
+        upload_provider=None,
         storage_backend=storage_backend,
     )
 
@@ -5526,6 +5528,7 @@ class _ManagedFileTableOverRows:
             unified_file_id=where["unified_file_id"],
             file_object=json.loads(created["file_object"]),
             model_mappings=json.loads(created["model_mappings"]),
+            upload_provider=created.get("upload_provider"),
             flat_model_file_ids=created["flat_model_file_ids"],
             created_by=created["created_by"],
             team_id=created["team_id"],
@@ -5557,7 +5560,8 @@ class _ManagedFileTableOverRows:
         keys_index: Final = next(index for index, param in enumerate(params) if isinstance(param, list))
         owner_ids: Final = frozenset(params[:keys_index])
         model_mapping_keys: Final = frozenset(params[keys_index])
-        cursor_id: Final = params[keys_index + 1] if len(params) == keys_index + 3 else None
+        provider: Final = params[keys_index + 1]
+        cursor_id: Final = params[keys_index + 2] if len(params) == keys_index + 4 else None
         ordered_rows: Final = [
             row
             for row in (self.rows[::-1] if '"created_at" ASC' in query else self.rows)
@@ -5571,8 +5575,11 @@ class _ManagedFileTableOverRows:
         listed_rows: Final = [
             row
             for row in ordered_rows[start:]
-            if not model_mapping_keys.isdisjoint(row.model_mappings)
-            or ('"storage_backend" IS NOT NULL' in query and row.storage_backend is not None)
+            if (
+                row.upload_provider == provider
+                if provider is not None and row.upload_provider is not None
+                else not model_mapping_keys.isdisjoint(row.model_mappings) or row.storage_backend is not None
+            )
         ]
         return [
             {
@@ -5580,6 +5587,7 @@ class _ManagedFileTableOverRows:
                 "file_object": row.file_object,
                 "model_mappings": row.model_mappings,
                 "storage_backend": row.storage_backend,
+                "upload_provider": row.upload_provider,
             }
             for row in listed_rows[: params[-1]]
         ]
@@ -6769,25 +6777,98 @@ def test_wildcard_upload_is_listed_for_its_model_and_provider(
         assert _listed_ids(client.get("/v1/files?provider=openai", headers=_as_team_member("user-b", "team-b"))) == []
 
 
-def test_legacy_raw_file_stays_listed_when_its_model_moves_to_a_wildcard(
+@pytest.mark.parametrize("load_balanced", [False, True], ids=["model-encoded", "raw"])
+def test_provider_list_keeps_the_upload_provider_when_the_model_moves(
+    plain_upload_proxy: _ManagedFileTableOverRows, monkeypatch: pytest.MonkeyPatch, load_balanced: bool
+) -> None:
+    model: Final = "gpt-3.5-turbo"
+    owner: Final = _as_team_member("user-a", "team-a")
+    monkeypatch.setattr(litellm, "enable_loadbalancing_on_batch_endpoints", load_balanced)
+    line: Final = {"custom_id": "1", "method": "POST", "url": "/v1/chat/completions", "body": {"model": model}}
+    with respx.mock() as upstream:
+        upstream.post(_OPENAI_ACCOUNT.files_url).respond(200, json=_OPENAI_ACCOUNT.file_body)
+        response: Final = client.post(
+            "/v1/files?provider=openai",
+            data={"purpose": "batch"} if load_balanced else {"purpose": "user_data", "model": model},
+            files={"file": ("input.jsonl", json.dumps(line).encode(), "application/jsonl")}, headers=owner,
+        )
+    assert response.status_code == 200, response.text
+    file_id: Final = response.json()["id"]
+    assert (file_id == _PLAIN_UPLOAD_ID) is load_balanced
+    for route, provider in (("*", "openai"), (model, "anthropic"), ("*", "anthropic")):
+        monkeypatch.setattr(
+            "litellm.proxy.proxy_server.llm_router",
+            Router(model_list=[{"model_name": route, "litellm_params": {"model": f"{provider}/*", "api_key": "test"}}]),
+        )
+        assert _listed_ids(client.get("/v1/files?provider=openai", headers=owner)) == [file_id]
+        assert _listed_ids(client.get("/v1/files?provider=anthropic", headers=owner)) == []
+        assert _listed_ids(client.get("/v1/files", params={"model": model}, headers=owner)) == [file_id]
+        assert _listed_ids(client.get("/v1/files?provider=openai", headers=_as_team_member("other", "team-b"))) == []
+        _as_team_member("user-a", "team-a")
+
+
+def test_released_batch_output_is_listed_under_its_wildcard_provider(
     plain_upload_proxy: _ManagedFileTableOverRows, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    owner: Final = _as_team_member("test-user", "team-a")
-    plain_upload_proxy.rows.extend((
-        _managed_file_row("file-legacy", model_mappings={"gpt-3.5-turbo": "file-legacy"}),
-        _managed_file_row("file-direct", model_mappings={"_provider_upload_anthropic": "file-direct"}),
-        _managed_file_row("managed-id", model_mappings={"retired-deployment": "file-managed"}),
-        _managed_file_row("passthrough-id", model_mappings={"_passthrough_anthropic": "file-passthrough"}),
-    ))
-    assert _listed_ids(client.get("/v1/files?provider=openai", headers=owner)) == ["file-legacy"]
+    model: Final = "gpt-3.5-turbo"
+    file_id: Final = encode_file_id_with_model(file_id="file-output", model=model)
+    row: Final = _managed_file_row(file_id, model_mappings={model: "file-output"})
+    row.file_object["purpose"] = "batch_output"
+    plain_upload_proxy.rows.append(row)
     monkeypatch.setattr(
         "litellm.proxy.proxy_server.llm_router",
-        Router(model_list=[{"model_name": "*", "litellm_params": {"model": "openai/*", "api_key": "test-key"}}]),
+        Router(model_list=[{"model_name": "*", "litellm_params": {"model": "openai/*", "api_key": "test"}}]),
     )
-    assert _listed_ids(client.get("/v1/files?provider=openai", headers=owner)) == ["file-legacy"]
-    assert _listed_ids(client.get("/v1/files?model=gpt-3.5-turbo", headers=owner)) == ["file-legacy"]
-    assert "file-legacy" not in _listed_ids(client.get("/v1/files?provider=anthropic", headers=owner))
-    assert _listed_ids(client.get("/v1/files?provider=openai", headers=_as_team_member("other", "team-b"))) == []
+    owner: Final = _as_team_member("test-user", "team-a")
+    assert _listed_ids(client.get("/v1/files?provider=openai", headers=owner)) == [file_id]
+    assert _listed_ids(client.get("/v1/files?provider=anthropic", headers=owner)) == []
+
+
+@pytest.mark.parametrize("sibling_succeeds", [True, False])
+def test_batch_fanout_lists_each_successful_provider_copy(
+    plain_upload_proxy: _ManagedFileTableOverRows, monkeypatch: pytest.MonkeyPatch, sibling_succeeds: bool
+) -> None:
+    model: Final = "gpt-3.5-turbo"
+    monkeypatch.setattr(litellm, "enable_loadbalancing_on_batch_endpoints", True)
+    monkeypatch.setattr(
+        "litellm.proxy.proxy_server.llm_router",
+        Router(model_list=[
+            {"model_name": model, "litellm_params": {"model": "openai/gpt-4o", "api_key": "test"}},
+            {"model_name": model, "litellm_params": {"model": "anthropic/claude-test", "api_key": "test"}},
+        ], num_retries=0),
+    )
+    owner: Final = _as_team_member("user-a", "team-a")
+    with respx.mock() as upstream:
+        upstream.post(_OPENAI_ACCOUNT.files_url).respond(200, json=_OPENAI_ACCOUNT.file_body)
+        upstream.post(_ANTHROPIC_ACCOUNT.files_url).respond(
+            200 if sibling_succeeds else 400,
+            json={**_ANTHROPIC_ACCOUNT.file_body, "id": "file-sibling"} if sibling_succeeds else {"error": "rejected"},
+        )
+        result: Final = client.post(
+            "/v1/files", data={"purpose": "batch"}, files={"file": ("batch.jsonl", VALID_BATCH_LINE)}, headers=owner
+        )
+    assert (result.status_code == 200) is sibling_succeeds, result.text
+    assert _listed_ids(client.get("/v1/files?provider=openai", headers=owner)) == [_PLAIN_UPLOAD_ID]
+    assert _listed_ids(client.get("/v1/files?provider=anthropic", headers=owner)) == (
+        ["file-sibling"] if sibling_succeeds else []
+    )
+
+
+@pytest.mark.parametrize("scope", ["model=gpt-3.5-turbo", "provider=openai"])
+def test_provider_declining_a_delete_keeps_the_owner_listing(
+    plain_upload_proxy: _ManagedFileTableOverRows, scope: str
+) -> None:
+    row: Final = _managed_file_row(_PLAIN_UPLOAD_ID, model_mappings={"gpt-3.5-turbo": _PLAIN_UPLOAD_ID})
+    plain_upload_proxy.rows.append(row)
+    owner: Final = _as_team_member("test-user", "team-a")
+    with respx.mock() as upstream:
+        upstream.delete(f"{_OPENAI_ACCOUNT.files_url}/{_PLAIN_UPLOAD_ID}").respond(
+            200, json={**_OPENAI_ACCOUNT.deleted_body, "deleted": False}
+        )
+        result: Final = client.delete(f"/v1/files/{_PLAIN_UPLOAD_ID}?{scope}", headers=owner)
+    assert result.status_code == 200, result.text
+    assert result.json()["deleted"] is False
+    assert _listed_ids(client.get("/v1/files?provider=openai", headers=owner)) == [_PLAIN_UPLOAD_ID]
 
 
 def test_managed_listing_skips_expired_rows_in_both_cursor_directions(
@@ -6872,6 +6953,7 @@ def _recorded_file_for_cleanup(
         created_by="user-a",
         team_id="team-a",
         storage_backend=storage_backend,
+        upload_provider=None,
         storage_url=None,
     )
 
@@ -6955,7 +7037,7 @@ def test_successful_file_delete_removes_owner_listing_by_supported_id_spelling(
                 {"custom_llm_provider": "gemini", "api_key": "gemini-test-key"},
             ],
         )
-    provider_delete: Final = AsyncMock(return_value={"id": request_file_id, "object": "file", "deleted": True})
+    provider_delete: Final = AsyncMock(return_value=FileDeleted(id=request_file_id, object="file", deleted=True))
     monkeypatch.setattr(litellm, "afile_delete", provider_delete)
 
     listed_before: Final = client.get(f"/v1/files?provider={provider}", headers=_as_team_member("user-a", "team-a"))
@@ -6985,7 +7067,7 @@ def test_delete_one_model_copy_preserves_sibling_ownership_and_denies_cross_team
         [file_a, file_b],
     )
     plain_upload_proxy.rows.append(row)
-    provider_delete: Final = AsyncMock(return_value={"id": file_a, "object": "file", "deleted": True})
+    provider_delete: Final = AsyncMock(return_value=FileDeleted(id=file_a, object="file", deleted=True))
     monkeypatch.setattr(litellm, "afile_delete", provider_delete)
 
     deleted: Final = client.delete(
@@ -7019,7 +7101,8 @@ def test_successful_provider_delete_keeps_a_storage_backed_owner_row(
         storage_backend="s3",
     )
     plain_upload_proxy.rows.append(row)
-    monkeypatch.setattr(litellm, "afile_delete", AsyncMock(return_value={"id": file_id, "object": "file", "deleted": True}))
+    provider_delete: Final = AsyncMock(return_value=FileDeleted(id=file_id, object="file", deleted=True))
+    monkeypatch.setattr(litellm, "afile_delete", provider_delete)
 
     deleted: Final = client.delete(f"/v1/files/{file_id}?provider=openai", headers=_as_team_member("user-a", "team-a"))
 
@@ -7056,7 +7139,8 @@ def test_conditional_owner_delete_preserves_a_copy_added_after_candidate_lookup(
         return await original_delete_many(where)
 
     monkeypatch.setattr(plain_upload_proxy, "delete_many", add_copy_before_delete)
-    monkeypatch.setattr(litellm, "afile_delete", AsyncMock(return_value={"id": file_id, "object": "file", "deleted": True}))
+    provider_delete: Final = AsyncMock(return_value=FileDeleted(id=file_id, object="file", deleted=True))
+    monkeypatch.setattr(litellm, "afile_delete", provider_delete)
 
     deleted: Final = client.delete(
         f"/v1/files/{file_id}?model=gpt-3.5-turbo", headers=_as_team_member("user-a", "team-a")

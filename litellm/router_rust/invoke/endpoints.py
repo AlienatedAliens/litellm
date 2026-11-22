@@ -2373,6 +2373,7 @@ class RustEndpoints:
         from litellm.litellm_core_utils.routing_common_utils import (
             add_model_file_id_mappings,  # pyright: ignore[reportUnknownVariableType]  # litellm's untyped helpers and request values
         )
+        from litellm.types.llms.openai import OpenAIFileObject
         from litellm.types.utils import LlmProviders
 
         healthy: Final = await self._core.select(
@@ -2385,12 +2386,14 @@ class RustEndpoints:
         )
         deployments: Final = list(healthy) if isinstance(healthy, Sequence) else [healthy]
 
+        record_copy: Final = batch_utils.routed_file_upload_recorder.get()
+
         async def create_for(deployment: Mapping[str, object]) -> object:
-            kwargs_copy: Final = safe_deep_copy(dict(kwargs))  # pyright: ignore[reportUnknownVariableType]  # litellm's untyped helpers and request values
+            kwargs_copy: Final = as_dict(safe_deep_copy(dict(kwargs)))  # pyright: ignore[reportUnknownArgumentType]  # the untyped copier preserves request keys and values
             update_kwargs_with_deployment(
                 self._core.shaping,
                 deployment,
-                kwargs_copy,  # pyright: ignore[reportUnknownArgumentType]  # litellm's untyped helpers and request values
+                kwargs_copy,
                 usage=self._core.router_usage,
                 function_name="acreate_file",
             )
@@ -2422,24 +2425,32 @@ class RustEndpoints:
                     {**as_dict(kwargs_copy.get("extra_body")), "target_model_names": stripped}  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]  # litellm's untyped helpers and request values
                 )
             if "gcs_bucket_name" in data:
-                metadata_bucket(kwargs_copy, "litellm_metadata")["gcs_bucket_name"] = data["gcs_bucket_name"]  # pyright: ignore[reportUnknownArgumentType]  # litellm's untyped helpers and request values
+                metadata_bucket(kwargs_copy, "litellm_metadata")["gcs_bucket_name"] = data["gcs_bucket_name"]
             from litellm.router_rust.invoke.slots import deployment_slot
 
-            with deployment_slot(self._core, deployment, kwargs_copy):  # pyright: ignore[reportUnknownArgumentType]  # litellm's untyped helpers and request values
-                response: Final = await self._direct(
-                    "acreate_file",
-                    {
-                        **data,
-                        "custom_llm_provider": provider,
-                        "caching": self._cache_responses,
-                        "client": model_client(self._core, PLANS["acreate_file"], deployment, kwargs_copy),  # pyright: ignore[reportUnknownArgumentType]  # litellm's untyped helpers and request values
-                        **kwargs_copy,
-                    },  # pyright: ignore[reportUnknownArgumentType]  # litellm's untyped helpers and request values
-                )
+            with deployment_slot(self._core, deployment, kwargs_copy):
+                upload_args: Final[Mapping[str, object]] = {
+                    **data,
+                    "custom_llm_provider": provider,
+                    "caching": self._cache_responses,
+                    "client": model_client(self._core, PLANS["acreate_file"], deployment, kwargs_copy),
+                    **kwargs_copy,
+                }
+                response: Final = await self._direct("acreate_file", upload_args)
             self.counters.success_calls[model_name] += 1
+            if record_copy is not None:
+                upload_provider: Final = upload_args["custom_llm_provider"]
+                if not isinstance(upload_provider, str):
+                    raise TypeError("A routed file upload requires a provider name")
+                await record_copy(OpenAIFileObject.model_validate(response), upload_provider)
             return response
 
-        responses: Final = await asyncio.gather(*(create_for(as_dict(d)) for d in deployments))
+        responses: Final = await asyncio.gather(
+            *(create_for(as_dict(d)) for d in deployments), return_exceptions=record_copy is not None
+        )
+        for result in responses:
+            if isinstance(result, BaseException):
+                raise result
         if len(responses) == 0:
             raise Exception("No healthy deployments found.")  # noqa: TRY002  # as the Python router
         mapping: Final = add_model_file_id_mappings(healthy_deployments=deployments, responses=responses)  # pyright: ignore[reportArgumentType, reportUnknownVariableType]  # deployment records

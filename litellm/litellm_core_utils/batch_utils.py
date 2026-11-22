@@ -1,6 +1,6 @@
 import io
 import json
-from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Generator, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -13,7 +13,7 @@ from pydantic import TypeAdapter, ValidationError
 from litellm._logging import verbose_logger
 from litellm.litellm_core_utils.core_helpers import finite_cost
 from litellm.litellm_core_utils.llm_cost_calc.guardrail_cost import guardrail_information_cost
-from litellm.types.llms.openai import FileTypes, OpenAIFilesPurpose
+from litellm.types.llms.openai import FileTypes, OpenAIFileObject, OpenAIFilesPurpose
 from litellm.types.utils import CallTypes, LlmProviders
 from litellm.types.videos.main import VideoObject
 from litellm.types.videos.utils import POLLED_VIDEO_STATUS_KWARG, canonical_video_id, is_video_status_call_type
@@ -33,6 +33,9 @@ POLLED_BATCH_COST_IS_FINAL_KWARG: Final = "polled_batch_cost_is_final"
 BATCH_COST_REQUEST_ID_SUFFIX: Final = "_batch_cost"
 _AZURE_PROVIDERS: Final = frozenset({LlmProviders.AZURE.value, LlmProviders.AZURE_AI.value})
 
+routed_file_upload_recorder: Final[ContextVar[Callable[[OpenAIFileObject, str], Awaitable[None]] | None]] = ContextVar(
+    "routed_file_upload_recorder", default=None
+)
 _batch_create_routing: Final[ContextVar[bool]] = ContextVar("batch_create_routing", default=False)
 _DeploymentT: Final = TypeVar("_DeploymentT", bound=Mapping[str, object])
 

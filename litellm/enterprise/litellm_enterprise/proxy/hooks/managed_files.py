@@ -80,7 +80,6 @@ from litellm.proxy.litellm_pre_call_utils import (
 from litellm.proxy.openai_files_endpoints.common_utils import (
     BATCH_CREATE_HIDDEN_PARAM,
     FILE_LIST_CONTINUATION_CHUNK_SIZE,
-    PROVIDER_UPLOAD_MODEL_PREFIX,
     TeamProviderDeployment,
     _is_base64_encoded_unified_file_id,
     apply_unified_file_ids,
@@ -316,6 +315,7 @@ def _is_xai_batch_output(
 
 
 class _ManagedFileRow(Protocol):
+    upload_provider: str | None
     unified_file_id: str
     file_object: OpenAIFileObject
     model_mappings: Mapping[str, str]
@@ -534,6 +534,8 @@ def _managed_file_table(prisma_client: _ManagedResourcePrismaClient) -> _Managed
 
 class _ListedFileRow(Protocol):
     @property
+    def upload_provider(self) -> str | None: ...
+    @property
     def unified_file_id(self) -> str: ...
 
     @property
@@ -552,6 +554,7 @@ class _ScopedFileRow(BaseModel):
     unified_file_id: str
     file_object: JsonValue = None
     model_mappings: Mapping[str, JsonValue]
+    upload_provider: str | None = None
     storage_backend: str | None = None
 
 
@@ -559,22 +562,16 @@ _SCOPED_FILE_ROWS: Final = TypeAdapter(tuple[_ScopedFileRow, ...])
 
 
 def _file_in_scope(row: _ListedFileRow, scope: FileListModelScope | None) -> bool:
-    if scope is None or scope.holds(row.model_mappings, stored=row.storage_backend is not None):
+    if scope is None:
+        return True
+    if row.upload_provider is not None and scope.upload_provider is not None:
+        return row.upload_provider == scope.upload_provider
+    if scope.holds(row.model_mappings, stored=row.storage_backend is not None):
         return True
     if scope.routes_uploaded_model_name is None:
         return False
     model: Final = decode_model_from_file_id(row.unified_file_id)
-    if model is not None:
-        return model in row.model_mappings and scope.routes_uploaded_model_name(model)
-    # Legacy load-balanced uploads saved the raw ID under a single model name.
-    if row.storage_backend is not None or len(row.model_mappings) != 1:
-        return False
-    model_key: Final = next(iter(row.model_mappings))
-    return (
-        row.model_mappings[model_key] == row.unified_file_id
-        and not model_key.startswith(PROVIDER_UPLOAD_MODEL_PREFIX)
-        and scope.routes_uploaded_model_name(model_key)
-    )
+    return model is not None and model in row.model_mappings and scope.routes_uploaded_model_name(model)
 
 
 def _owner_condition(owner_filter: Mapping[str, object]) -> tuple[str, tuple[str, ...]]:
@@ -592,28 +589,32 @@ def _owner_condition(owner_filter: Mapping[str, object]) -> tuple[str, tuple[str
 async def _scoped_file_rows(
     database: _ManagedResourceDatabase,
     owner_filter: Mapping[str, object],
-    model_mapping_keys: frozenset[str],
+    scope: FileListModelScope,
     cursor_id: str | None,
     direction: Literal["asc", "desc"],
     take: int,
 ) -> tuple[_ScopedFileRow, ...]:
     owner_condition, owner_params = _owner_condition(owner_filter)
     keys_param: Final = len(owner_params) + 1
+    provider_param: Final = keys_param + 1
     comparison: Final = "<" if direction == "desc" else ">"
     cursor_condition: Final = (
         f'AND ("created_at", "unified_file_id") {comparison} (SELECT "created_at", "unified_file_id" '
-        f'FROM "LiteLLM_ManagedFileTable" WHERE "unified_file_id" = ${keys_param + 1}) '
+        f'FROM "LiteLLM_ManagedFileTable" WHERE "unified_file_id" = ${provider_param + 1}) '
         if cursor_id
         else ""
     )
     order: Final = direction.upper()
     rows: Final = await database.query_raw(
-        'SELECT "unified_file_id", "file_object", "model_mappings", "storage_backend" FROM "LiteLLM_ManagedFileTable" '
-        f'WHERE {owner_condition} AND ("model_mappings" ?| ${keys_param}::text[] OR "storage_backend" IS NOT NULL) '
+        'SELECT "unified_file_id", "file_object", "model_mappings", "storage_backend", "upload_provider" '
+        'FROM "LiteLLM_ManagedFileTable" '
+        f'WHERE {owner_condition} AND COALESCE("upload_provider" = ${provider_param}::text, '
+        f'"model_mappings" ?| ${keys_param}::text[] OR "storage_backend" IS NOT NULL) '
         f'{cursor_condition}ORDER BY "created_at" {order}, "unified_file_id" {order} '
-        f"LIMIT ${keys_param + (2 if cursor_id else 1)}",
+        f"LIMIT ${provider_param + (2 if cursor_id else 1)}",
         *owner_params,
-        sorted(model_mapping_keys),
+        sorted(scope.model_mapping_keys),
+        scope.upload_provider,
         *((cursor_id,) if cursor_id else ()),
         take,
     )
@@ -800,6 +801,7 @@ class _PROXY_LiteLLMManagedFiles(CustomLogger, BaseFileEndpoints):
         litellm_parent_otel_span: Optional[Span],
         model_mappings: Dict[str, str],
         user_api_key_dict: UserAPIKeyAuth,
+        upload_provider: str | None = None,
     ) -> None:
         verbose_logger.info(f"Storing LiteLLM Managed File object with id={file_id} in cache")
         storage_metadata: Final = _storage_metadata_of(file_object)
@@ -834,6 +836,8 @@ class _PROXY_LiteLLMManagedFiles(CustomLogger, BaseFileEndpoints):
             "team_id": user_api_key_dict.team_id,
             "updated_by": user_api_key_dict.user_id,
         }
+        if upload_provider is not None:
+            db_data["upload_provider"] = upload_provider
         update_data = {
             "model_mappings": json.dumps(model_mappings),
             "flat_model_file_ids": flat_model_file_ids,
@@ -2607,9 +2611,8 @@ class _PROXY_LiteLLMManagedFiles(CustomLogger, BaseFileEndpoints):
         every file on the proxy still reads one bounded page at a time.
         ``after`` pages toward older files and ``before`` toward newer ones,
         each page still ordered newest first.
-        Exact model keys are filtered in the query. A provider with a wildcard
-        deployment can also match concrete model names saved at upload, so its
-        listing resolves those names while paging through the caller's rows.
+        The query filters plain uploads by their original provider and managed files
+        by their deployment keys. Storage-backed files follow their configured route.
         Expiry and purpose are checked against the stored file object. Rows
         whose object will not parse drop out there too, so a chunk of rows can
         yield fewer matches than the page holds. Successive chunks are read
@@ -2666,9 +2669,7 @@ class _PROXY_LiteLLMManagedFiles(CustomLogger, BaseFileEndpoints):
         while len(matches) <= page_size:
             cursor_args: _CursorPageArgs = {"cursor": {"unified_file_id": cursor_id}, "skip": 1} if cursor_id else {}
             chunk: Sequence[_ListedFileRow] = (
-                await _scoped_file_rows(
-                    database, owner_filter, model_scope.model_mapping_keys, cursor_id, direction, chunk_size
-                )
+                await _scoped_file_rows(database, owner_filter, model_scope, cursor_id, direction, chunk_size)
                 if model_scope is not None and model_scope.routes_uploaded_model_name is None
                 else await database.litellm_managedfiletable.find_many(
                     where=owner_filter,
