@@ -11,6 +11,7 @@ mod pipeline;
 pub mod plan;
 mod public;
 mod request;
+pub mod request_policy;
 pub mod routes;
 mod settings;
 #[cfg(test)]
@@ -23,8 +24,8 @@ mod value;
 pub use caller::{Caller, NotACaller, StoredKey};
 pub use error::{
     AgentIdentityFailure, AssertionRejection, BudgetExceeded, ClaimDenial, Error, JwtDenial,
-    KeyDenial, KeyError, KeyFailure, ModelAccessDenied, PremiumRequired, RbacDenial, Searched,
-    TeamDenial, TokenError, VerifyDenial,
+    KeyDenial, KeyError, KeyFailure, ModelAccessDenied, PremiumRequired, RbacDenial, RequestDenial,
+    Searched, TeamDenial, TokenError, VerifyDenial,
 };
 pub use host::{
     AgentRow, AuthHost, EndUserRow, KeyRow, MembershipRow, ObjectPermissionRow, OperatorHooks,
@@ -46,9 +47,19 @@ use crate::{
         key::KeyIdentity,
     },
     plan::Plan,
+    request_policy::Origin,
 };
 
 type Authenticated<H> = Result<Outcome<<H as AuthHost>::Rows>, Error>;
+
+/// Whether the proxy takes the request at all, decided before any credential is read.
+pub fn check_request(
+    route: &str,
+    origin: Origin<'_>,
+    settings: &Settings,
+) -> Result<(), RequestDenial> {
+    request_policy::check(route, origin, &settings.request_policy)
+}
 
 /// Which path authenticates the request, in the proxy's order. Custom auth runs before it, in the
 /// host, since it depends only on the host's configuration.

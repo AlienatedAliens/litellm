@@ -5,7 +5,7 @@ use crate::{
     authn::{jwt::JwtSettings, key::KeySettings},
     authz::RoutePolicy,
     identity::jwt::TeamSettings,
-    plan,
+    plan, request_policy,
     routes::{RouteGroup, RouteGroups},
 };
 
@@ -31,6 +31,7 @@ pub struct HostFacts {
 
 #[derive(Clone, Debug)]
 pub struct Settings {
+    pub request_policy: request_policy::Settings,
     pub plan: plan::Settings,
     pub key: KeySettings,
     pub jwt: JwtSettings,
@@ -65,6 +66,7 @@ impl Settings {
     ) -> Self {
         let has_master_key = facts.master_key.is_some();
         Self {
+            request_policy: request_policy::Settings::new(general),
             plan: plan::Settings::new(
                 general,
                 facts.premium,

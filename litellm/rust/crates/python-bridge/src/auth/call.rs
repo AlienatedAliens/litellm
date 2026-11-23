@@ -17,6 +17,7 @@ use litellm_gateway_auth_core::{
         key::{KeyContext, KeyIdentity, Owner, TeamGrant},
     },
     plan::Plan,
+    request_policy::Origin,
     routes::passthrough::{ForwardedRoutes, PassthroughGrants},
 };
 use litellm_host_python::{from_py, to_py};
@@ -1322,6 +1323,28 @@ impl AuthCall {
     #[staticmethod]
     fn is_public_route(route: &str, settings: &AuthSettings) -> bool {
         core::is_public_route(route, &settings.0)
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (route, peer, forwarded_for, settings))]
+    fn check_request(
+        route: &str,
+        peer: Option<&str>,
+        forwarded_for: Option<&str>,
+        settings: &AuthSettings,
+    ) -> Option<DenialView> {
+        let origin = Origin {
+            peer,
+            forwarded_for,
+        };
+        core::check_request(route, origin, &settings.0)
+            .err()
+            .map(|denial| denial.public().into())
+    }
+
+    #[staticmethod]
+    fn is_route_allowed_on_proxy(route: &str, settings: &AuthSettings) -> bool {
+        settings.0.request_policy.permits_route(route)
     }
 
     #[staticmethod]

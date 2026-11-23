@@ -1,4 +1,4 @@
-use litellm_python_compat::lenient::{IsTrue, LaxBool, StrBool, Truthy};
+use litellm_python_compat::lenient::{IsTrue, LaxBool, Lenient, StrBool, Truthy};
 use litellm_secret_value::SecretValue;
 use serde::Deserialize;
 use serde_with::{Map, serde_as};
@@ -119,8 +119,10 @@ pub struct GeneralSettings {
     #[serde_as(as = "IsTrue")]
     pub allow_client_side_credentials: bool,
     pub public_routes: Option<RouteList>,
-    pub allowed_ips: Option<Box<[String]>>,
-    pub allowed_routes: Option<Box<[String]>>,
+    pub allowed_ips: Option<Lenient<Box<[String]>>>,
+    #[serde_as(as = "LaxBool")]
+    pub use_x_forwarded_for: Option<bool>,
+    pub allowed_routes: Option<RouteList>,
     pub custom_auth: Option<String>,
     pub litellm_key_header_name: Option<String>,
     pub required_customer_headers: Box<[String]>,
@@ -186,6 +188,7 @@ impl Default for GeneralSettings {
             allow_client_side_credentials: false,
             public_routes: None,
             allowed_ips: None,
+            use_x_forwarded_for: None,
             allowed_routes: None,
             custom_auth: None,
             litellm_key_header_name: None,

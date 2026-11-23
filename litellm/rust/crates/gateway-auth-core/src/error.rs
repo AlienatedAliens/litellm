@@ -87,6 +87,15 @@ pub enum PremiumRequired {
     Jwt,
 }
 
+/// A request the proxy refuses before it reads a credential.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum RequestDenial {
+    #[error("Access forbidden: IP address {address} not allowed.")]
+    AddressNotAllowed { address: String },
+    #[error("Access forbidden: Route {route} not allowed")]
+    RouteNotAllowed { route: String },
+}
+
 /// `litellm.BudgetExceededError`, from the core's own comparison or as a host-owned budget step reported it.
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
 #[error("{message}")]

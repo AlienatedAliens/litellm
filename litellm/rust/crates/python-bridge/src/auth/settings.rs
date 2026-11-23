@@ -56,7 +56,10 @@ pub(crate) fn jwt_auth(litellm_jwtauth: &Bound<'_, PyAny>) -> PyResult<JwtAuthSe
 }
 
 /// The `general_settings` keys the auth core reads.
-const AUTH_KEYS: [&str; 6] = [
+const AUTH_KEYS: [&str; 9] = [
+    "allowed_ips",
+    "use_x_forwarded_for",
+    "allowed_routes",
     "enable_jwt_auth",
     "enable_oauth2_auth",
     "enable_oauth2_proxy_auth",
