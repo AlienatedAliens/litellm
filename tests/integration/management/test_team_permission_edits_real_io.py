@@ -53,7 +53,15 @@ async def test_create_with_one_connection_commits_or_rolls_back_all_related_rows
             db.execute(
                 """ALTER TABLE "LiteLLM_ObjectPermissionTable" ADD CHECK (NOT ('declined-tool' = ANY(agents)))"""
             )
+            db.execute(
+                """INSERT INTO "LiteLLM_AccessGroupTable" (access_group_id, access_group_name) VALUES ('g', 'g')"""
+            )
+            db.execute(
+                """ALTER TABLE "LiteLLM_AccessGroupTable"
+                   ADD CHECK (NOT ('declined-mirror' = ANY(assigned_team_ids)))"""
+            )
             args: Final = {
+                "access_group_ids": ["g"],
                 "team_member_budget": 7,
                 "budget_duration": "1d",
                 "team_member_rollover_max_budget": 10,
@@ -77,11 +85,16 @@ async def test_create_with_one_connection_commits_or_rolls_back_all_related_rows
                 ("ordinary",),
             ).fetchone() == (7, 10, "1d", {"short": "one"}, {"tickets": ["list"]})
             before: Final = counts()
-            for rejected in (
-                {**args, "team_id": "declined-create"},
-                {**args, "team_id": "invalid-cap", "team_member_rollover_max_budget": 6},
-                {**args, "team_id": "declined-permission", "object_permission": {"agents": ["declined-tool"]}},
+            for overrides, status in (
+                ({"team_id": "declined-create"}, "500"),
+                ({"team_id": "invalid-cap", "team_member_rollover_max_budget": 6}, "400"),
+                ({"team_id": "declined-permission", "object_permission": {"agents": ["declined-tool"]}}, "500"),
+                ({"team_id": "declined-mirror"}, "500"),
             ):
-                with pytest.raises(ProxyException):
-                    await new_team(NewTeamRequest.model_validate(rejected), request, _ADMIN, None)
+                with pytest.raises(ProxyException) as error:
+                    await new_team(NewTeamRequest.model_validate({**args, **overrides}), request, _ADMIN, None)
+                assert error.value.code == status
                 assert counts() == before
+            assert db.execute(
+                """SELECT assigned_team_ids FROM "LiteLLM_AccessGroupTable" WHERE access_group_id = 'g'"""
+            ).fetchone() == (["ordinary"],)

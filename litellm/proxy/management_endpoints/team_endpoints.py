@@ -762,7 +762,7 @@ class TeamMemberBudgetHandler:
     @staticmethod
     async def create_team_member_budget_table(
         data: NewTeamRequest | _TeamAliasBudgetRow,
-        new_team_data_json: dict[str, object],
+        new_team_data_json: Mapping[str, object],
         user_api_key_dict: UserAPIKeyAuth,
         team_member_budget: float | None = None,
         team_member_rpm_limit: int | None = None,
@@ -823,16 +823,21 @@ class TeamMemberBudgetHandler:
             user_api_key_cache=user_api_key_cache,
         )
 
-        # Add team_member_budget_id as metadata field to team table
-        new_team_data_json["metadata"] = {
-            **_TEAM_METADATA_ADAPTER.validate_python(new_team_data_json.get("metadata") or {}),
-            "team_member_budget_id": team_member_budget_table.budget_id,
+        return TeamMemberBudgetHandler._with_member_budget(new_team_data_json, team_member_budget_table.budget_id)
+
+    @staticmethod
+    def _with_member_budget(
+        team_data: Mapping[str, object], budget_id: str
+    ) -> dict[str, object]:  # mutable-ok: the update route adds permission and metadata fields to its owned result
+        fields: Final = {
+            **team_data,
+            "metadata": {
+                **_TEAM_METADATA_ADAPTER.validate_python(team_data.get("metadata") or {}),
+                "team_member_budget_id": budget_id,
+            },
         }
-
-        # Remove team member fields from new_team_data_json
-        TeamMemberBudgetHandler.clean_team_member_fields(new_team_data_json)
-
-        return new_team_data_json
+        TeamMemberBudgetHandler.clean_team_member_fields(fields)
+        return fields
 
     @staticmethod
     def _member_budget_patch(
@@ -871,7 +876,7 @@ class TeamMemberBudgetHandler:
     async def upsert_team_member_budget_table(
         team_table: _TeamBudgetRow,
         user_api_key_dict: UserAPIKeyAuth,
-        updated_kv: dict[str, object],
+        updated_kv: Mapping[str, object],
         team_member_budget: float | None = None,
         team_member_rpm_limit: int | None = None,
         team_member_tpm_limit: int | None = None,
@@ -890,10 +895,7 @@ class TeamMemberBudgetHandler:
             update_budget,
         )
 
-        if team_table.metadata is None:
-            team_table.metadata = {}
-
-        team_member_budget_id: Final = team_table.metadata.get("team_member_budget_id")
+        team_member_budget_id: Final = (team_table.metadata or {}).get("team_member_budget_id")
         if team_member_budget_id is not None and isinstance(team_member_budget_id, str):
             budget_request: Final = TeamMemberBudgetHandler._member_budget_patch(
                 team_member_budget_id,
@@ -920,29 +922,21 @@ class TeamMemberBudgetHandler:
                 team_member_rpm_limit,
                 team_member_tpm_limit,
             )
-            updated_kv["metadata"] = {
-                **_TEAM_METADATA_ADAPTER.validate_python(updated_kv.get("metadata") or {}),
-                "team_member_budget_id": budget_row.budget_id,
-            }
+            return TeamMemberBudgetHandler._with_member_budget(updated_kv, budget_row.budget_id)
 
-        else:  # budget does not exist
-            updated_kv = await TeamMemberBudgetHandler.create_team_member_budget_table(
-                data=team_table,
-                new_team_data_json=updated_kv,
-                user_api_key_dict=user_api_key_dict,
-                team_member_budget=team_member_budget,
-                team_member_rpm_limit=team_member_rpm_limit,
-                team_member_tpm_limit=team_member_tpm_limit,
-                team_member_budget_duration=team_member_budget_duration,
-                team_member_rollover_max_budget=team_member_rollover_max_budget,
-                team_member_model_max_budget=team_member_model_max_budget,
-                user_api_key_cache=user_api_key_cache,
-                explicitly_set_fields=explicitly_set_fields,
-            )
-
-        # Remove team member fields from updated_kv
-        TeamMemberBudgetHandler.clean_team_member_fields(updated_kv)
-        return updated_kv
+        return await TeamMemberBudgetHandler.create_team_member_budget_table(
+            data=team_table,
+            new_team_data_json=updated_kv,
+            user_api_key_dict=user_api_key_dict,
+            team_member_budget=team_member_budget,
+            team_member_rpm_limit=team_member_rpm_limit,
+            team_member_tpm_limit=team_member_tpm_limit,
+            team_member_budget_duration=team_member_budget_duration,
+            team_member_rollover_max_budget=team_member_rollover_max_budget,
+            team_member_model_max_budget=team_member_model_max_budget,
+            user_api_key_cache=user_api_key_cache,
+            explicitly_set_fields=explicitly_set_fields,
+        )
 
     @staticmethod
     def clean_team_member_fields(data_dict: dict) -> None:

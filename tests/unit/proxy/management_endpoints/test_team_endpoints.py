@@ -3116,6 +3116,8 @@ async def test_create_team_member_budget_table():
 
         assert "team_member_budget_id" in result["metadata"]
         assert result["metadata"]["team_member_budget_id"] == "budget_123"
+        assert "metadata" not in new_team_data_json
+        assert new_team_data_json["team_member_budget"] == 100.0
 
         assert "team_member_budget" not in result
         assert "team_member_budget_duration" not in result
@@ -3224,6 +3226,8 @@ async def test_upsert_team_member_budget_table_existing_budget():
 
         assert "team_member_budget_id" in result["metadata"]
         assert result["metadata"]["team_member_budget_id"] == "existing_budget_123"
+        assert "metadata" not in updated_kv
+        assert updated_kv["team_member_budget"] == 200.0
 
         assert "team_member_budget" not in result
         assert "team_member_budget_duration" not in result
