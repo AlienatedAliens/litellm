@@ -5,6 +5,7 @@
 //! yet is never told.
 
 mod fields;
+pub mod hosted;
 pub mod model_capacity;
 pub mod parallel_request_limiter;
 mod spend_log_input;
@@ -23,7 +24,10 @@ use parking_lot::Mutex;
 use serde_json::{Map, Value};
 use strum::VariantArray;
 
-use self::fields::{Charged, Known};
+use self::{
+    fields::{Charged, Known},
+    hosted::Answers,
+};
 use crate::host::NativeRows;
 
 /// A hook the gateway runs for a call.
@@ -100,9 +104,20 @@ pub struct Registered {
     /// For a callback that keeps something of each request's caller, as Python's hooks are
     /// handed the caller's `UserAPIKeyAuth`. `None` takes the callback's own `request_state`.
     from_caller: Option<FromCaller>,
+    /// What answers the callback's host calls, for a callback that makes them.
+    host: Option<Arc<dyn Answers>>,
 }
 
 impl Registered {
+    /// `callback`, whose host calls `host` answers.
+    pub fn hosted(callback: Arc<dyn ErasedCallback>, host: Arc<dyn Answers>) -> Self {
+        Self {
+            callback,
+            from_caller: None,
+            host: Some(host),
+        }
+    }
+
     /// `callback`, with its state for each request made from that request's caller.
     pub fn for_caller<C: Callback>(
         callback: Arc<C>,
@@ -111,6 +126,7 @@ impl Registered {
         Self {
             callback,
             from_caller: Some(Box::new(move |identity| Arc::new(state(identity)))),
+            host: None,
         }
     }
 }
@@ -120,6 +136,7 @@ impl From<Arc<dyn ErasedCallback>> for Registered {
         Self {
             callback,
             from_caller: None,
+            host: None,
         }
     }
 }
@@ -228,7 +245,7 @@ impl Call {
                 continue;
             };
             let name = &manifest.selection.name;
-            let turn = self.turn(callback.as_ref(), name, subscription, state.as_ref());
+            let turn = self.turn(registered, name, subscription, state.as_ref());
             let ended = match turn.await {
                 Ok(None) => continue,
                 Ok(Some(abort)) => HookError::Refused(refusal(abort)),
@@ -253,14 +270,21 @@ impl Call {
     /// its patch is written for the callbacks after it, and its abort is handed back.
     async fn turn(
         &self,
-        callback: &dyn ErasedCallback,
+        registered: &Registered,
         name: &str,
         subscription: &Subscription,
         state: Option<&RequestState>,
     ) -> Result<Option<Abort>, Cause> {
         let hook = subscription.hook;
         let input = self.known.lock().input(hook, subscription.reads);
-        let Some(verdict) = callback.handle(&input, state).await? else {
+        let output = match &registered.host {
+            Some(host) => {
+                let callback = registered.callback.clone();
+                hosted::turn(callback, input, state.cloned(), host.as_ref()).await
+            }
+            None => registered.callback.handle(&input, state).await,
+        };
+        let Some(verdict) = output? else {
             return Ok(None);
         };
         subscription.check(&verdict)?;
