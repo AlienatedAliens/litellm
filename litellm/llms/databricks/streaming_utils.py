@@ -23,6 +23,9 @@ def _usage_block(usage: Usage) -> ChatCompletionUsageBlock:
     )
 
 
+_SSE_NON_DATA_FIELD_PREFIXES: Final = (":", "event:", "id:", "retry:")
+
+
 class ModelResponseIterator:
     def __init__(self, streaming_response, sync_stream: bool):
         self.streaming_response = streaming_response
@@ -145,6 +148,8 @@ class ModelResponseIterator:
 
 
 def _sse_data(raw_chunk: str) -> str:
+    if raw_chunk.startswith(_SSE_NON_DATA_FIELD_PREFIXES):
+        return ""
     return (litellm.CustomStreamWrapper.strip_sse_data_from_chunk(raw_chunk) or "").strip()
 
 
