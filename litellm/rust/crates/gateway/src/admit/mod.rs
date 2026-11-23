@@ -83,6 +83,11 @@ pub struct Admit {
     /// The native app's inference, which tells whether a caller may call the model it asks for.
     /// `None` leaves every caller with a model list to Python.
     inference: Option<Arc<Gateway>>,
+    /// Whether nothing stands behind the native app, so it serves what only Python could serve in
+    /// front of it: `/metrics`, with the Prometheus logger run natively.
+    standalone: bool,
+    /// Whether the native app serves `/metrics`.
+    metrics: bool,
 }
 
 const STORE_MODEL_IN_DB: &str = "STORE_MODEL_IN_DB";
@@ -148,6 +153,7 @@ impl Admit {
             auth: state.auth(config),
             aliased,
             inference: Some(state.inference.clone()),
+            metrics: state.metrics.is_some(),
             ..Self::built(config, state.inference.router.clone(), deployed)
         }
     }
@@ -167,7 +173,26 @@ impl Admit {
             deployed,
             aliased: Vec::new(),
             inference: None,
+            standalone: false,
+            metrics: false,
         }
+    }
+
+    /// For the native app with nothing behind it.
+    #[must_use]
+    pub fn standalone(self) -> Self {
+        Self {
+            standalone: true,
+            ..self
+        }
+    }
+
+    /// A scrape of `/metrics` the standalone app answers itself, which no other check reads.
+    pub fn scrape(&self, request: &Request) -> bool {
+        self.standalone
+            && self.metrics
+            && request.method() == axum::http::Method::GET
+            && matches!(request.uri().path(), "/metrics" | "/metrics/")
     }
 
     /// A caller whose model lists do not reach the model it asks for goes to Python, which
