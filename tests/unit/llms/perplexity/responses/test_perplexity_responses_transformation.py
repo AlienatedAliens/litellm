@@ -628,3 +628,29 @@ async def test_aresponses_rejects_moderation_for_perplexity_without_drop_params(
         )
 
     assert upstream.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_aresponses_forwards_tool_choice_and_parallel_tool_calls_to_perplexity_without_drop_params(
+    monkeypatch: pytest.MonkeyPatch, respx_mock: respx.MockRouter
+) -> None:
+    monkeypatch.setattr(litellm, "disable_aiohttp_transport", True)
+    monkeypatch.setattr(litellm, "drop_params", False)
+    litellm.in_memory_llm_clients_cache.flush_cache()
+    upstream: Final = respx_mock.post("https://api.perplexity.ai/v1/responses").mock(
+        return_value=httpx.Response(200, json=_SUCCESS_RESPONSE)
+    )
+
+    await litellm.aresponses(
+        model="perplexity/openai/gpt-5.2",
+        api_base="https://api.perplexity.ai",
+        api_key="fake-api-key",
+        input="What is the weather in Vienna?",
+        tools=[{"type": "function", "name": "get_weather", "parameters": {"type": "object", "properties": {}}}],
+        tool_choice={"type": "function", "name": "get_weather"},
+        parallel_tool_calls=False,
+    )
+
+    sent: Final = json.loads(upstream.calls.last.request.content)
+    assert sent["tool_choice"] == {"type": "function", "name": "get_weather"}
+    assert sent["parallel_tool_calls"] is False

@@ -11,17 +11,32 @@ from pydantic import ConfigDict, TypeAdapter
 
 import litellm
 from litellm._logging import verbose_logger
+from litellm.exceptions import ModelNotMappedError
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.llms.openai.chat.gpt_transformation import OpenAIGPTConfig
 from litellm.secret_managers.main import get_secret_str
 from litellm.types.llms.openai import AllMessageValues, ChatCompletionAnnotation, ChatCompletionAnnotationURLCitation
 from litellm.types.utils import ModelResponse, PromptTokensDetailsWrapper, Usage
+from litellm.utils import get_model_info_helper
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.tokenizer import Encoding as Tokenizer
 
 _PERPLEXITY_ATTRIBUTION_HEADERS: Final[Mapping[str, str]] = MappingProxyType({"X-Pplx-Integration": "litellm"})
 _JSON_OBJECT: Final = TypeAdapter(dict[str, object], config=ConfigDict(strict=True, hide_input_in_errors=True))
+_AGENT_API_TOOL_PARAMS: Final = ("tools", "tool_choice", "parallel_tool_calls")
+
+
+def _cost_map_mode(model: str) -> str | None:
+    try:
+        return get_model_info_helper(model=model, custom_llm_provider="perplexity").get("mode")
+    except ModelNotMappedError:
+        return None
+
+
+def _serves_agent_api(model: str) -> bool:
+    mode: Final = _cost_map_mode(model)
+    return mode == "responses" if mode is not None else "/" in model
 
 
 class PerplexityChatConfig(OpenAIGPTConfig):
@@ -52,7 +67,7 @@ class PerplexityChatConfig(OpenAIGPTConfig):
 
         Ref: https://docs.perplexity.ai/api-reference/chat-completions
 
-        Eg. Perplexity does not support tools, tool_choice, function_call, functions, etc.
+        Eg. Sonar models do not support tools, tool_choice, function_call, functions, etc.
         """
         base_openai_params: Final = [
             "frequency_penalty",
@@ -65,6 +80,7 @@ class PerplexityChatConfig(OpenAIGPTConfig):
             "top_p",
             "max_retries",
             "extra_headers",
+            *(_AGENT_API_TOOL_PARAMS if _serves_agent_api(model) else ()),
         ]
 
         try:
