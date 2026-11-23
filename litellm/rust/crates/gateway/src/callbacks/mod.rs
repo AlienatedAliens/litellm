@@ -7,6 +7,7 @@
 mod fields;
 pub mod model_capacity;
 pub mod parallel_request_limiter;
+mod spend_log_input;
 
 use std::sync::Arc;
 

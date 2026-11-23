@@ -17,7 +17,10 @@ use litellm_llms_types::formats::chat_completions::ChatCompletionsUsage;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use super::parallel_request_limiter::{MASTER_KEY_ALIAS, PROXY_ADMIN_NAME};
+use super::{
+    parallel_request_limiter::{MASTER_KEY_ALIAS, PROXY_ADMIN_NAME},
+    spend_log_input::{self, Served},
+};
 use crate::host::NativeRows;
 
 const MODEL: &str = "model";
@@ -124,6 +127,8 @@ fn route(call_type: CallType) -> &'static str {
 pub(super) struct Known {
     call_type: CallType,
     call_id: Option<String>,
+    /// Python's `litellm_trace_id`, which groups a row that names no session.
+    trace_id: String,
     charged: Charged,
     start: SystemTime,
     /// When the pre-call hook handed the body back for routing, Python's `api_call_start_time`.
@@ -189,6 +194,7 @@ impl Known {
         Self {
             call_type,
             call_id,
+            trace_id: uuid::Uuid::new_v4().to_string(),
             charged,
             start: SystemTime::now(),
             api_call_start: None,
@@ -330,6 +336,23 @@ impl Known {
         }
     }
 
+    /// The spend log callback's input for a served call. A failed call has none yet.
+    fn spend_log_input(&self) -> Option<Value> {
+        let provider = self.provider();
+        spend_log_input::success(&Served {
+            call_type: self.call_type,
+            route: route(self.call_type),
+            charged: &self.charged,
+            call_id: self.call_id.as_deref(),
+            trace_id: &self.trace_id,
+            stream: self.request.stream(),
+            start: self.start,
+            end: self.end?,
+            provider: provider.as_deref(),
+            call: self.served.as_ref()?,
+        })
+    }
+
     pub(super) fn response_headers(&self) -> &Map<String, Value> {
         &self.response_headers
     }
@@ -347,6 +370,7 @@ impl Known {
             Field::Deployment => record(self.served_deployment()?),
             Field::AttemptTiming => record(self.timing()),
             Field::SpendLogId => record(self.spend_log_id()),
+            Field::SpendLogInput => self.spend_log_input(),
             Field::LoggedModelGroup => record(LoggedModelGroup {
                 value: Some(Scalar::Text(self.served.as_ref()?.model_group.clone())),
                 ..LoggedModelGroup::default()
@@ -570,6 +594,24 @@ mod tests {
             None => known.fail(),
         }
         assert_eq!(known.spend_log_id().id.as_deref(), id);
+    }
+
+    #[rstest]
+    #[case::a_served_call(Some(served(Some("msg_1"))), Some("success"))]
+    #[case::a_failed_call(None, None)]
+    fn only_a_served_call_is_handed_a_spend_log_input(
+        #[case] served: Option<ServedCall>,
+        #[case] kind: Option<&str>,
+    ) {
+        let mut known = known();
+        known.release();
+        match served {
+            Some(served) => known.serve(served),
+            None => known.fail(),
+        }
+        let input = known.input(Hook::AttemptEnded, FieldSet::of(&[Field::SpendLogInput]));
+        let read = input.fields.raw(Field::SpendLogInput).unwrap();
+        assert_eq!(read.and_then(|input| input["kind"].as_str()), kind);
     }
 
     #[rstest]
