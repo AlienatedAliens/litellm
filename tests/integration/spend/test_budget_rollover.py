@@ -133,6 +133,46 @@ def test_budget_update_respects_a_competing_write(
         ]
 
 
+def test_cancelled_cap_clear_preserves_member_credits_until_retry(rollover_proxy: Gateway) -> None:
+    proxy: Final = rollover_proxy
+    assert proxy.database_url is not None
+    with proxy.scenario() as scenario, psycopg.connect(proxy.database_url, autocommit=True) as observer:
+        team: Final = scenario.team(
+            team_member_budget=5, team_member_budget_duration="30d", team_member_rollover_max_budget=12
+        )
+        members: Final = (scenario.member(team), scenario.member(team))
+        budget_id: Final = string_value(_member_budget(proxy, team, members[0])["budget_id"])
+        scenario.cleanups.callback(scenario.delete_budget, budget_id)
+        observer.execute(
+            'UPDATE "LiteLLM_TeamMembership" SET rollover_credit = 3 WHERE team_id = %s AND user_id IN (%s, %s)',
+            (team, *members),
+        )
+        balances: Final = (
+            'SELECT b.rollover_max_budget, m.rollover_credit FROM "LiteLLM_TeamMembership" m '
+            'JOIN "LiteLLM_BudgetTable" b USING (budget_id) WHERE m.team_id = %s AND m.user_id IN (%s, %s)'
+        )
+        clear: Final = {"team_id": team, "team_member_rollover_max_budget": None}
+        with ThreadPoolExecutor(max_workers=1) as executor, psycopg.connect(proxy.database_url) as holder:
+            holder.execute('SELECT 1 FROM "LiteLLM_BudgetTable" WHERE budget_id = %s FOR UPDATE', (budget_id,))
+            update: Final = executor.submit(proxy.request, "POST", "/team/update", clear)
+            waiter: Final = eventually(
+                lambda: observer.execute(
+                    "SELECT pid FROM pg_stat_activity WHERE datname = current_database() "
+                    "AND %s = ANY(pg_blocking_pids(pid))",
+                    (holder.info.backend_pid,),
+                ).fetchone(),
+                bool,
+            )
+            assert waiter is not None
+            assert observer.execute("SELECT pg_cancel_backend(%s)", waiter).fetchone() == (True,)
+            rejected: Final = update.result(timeout=15)
+            assert rejected.status_code == 500, rejected.text
+        assert observer.execute(balances, (team, *members)).fetchall() == [(12, 3), (12, 3)]
+
+        proxy.post("/team/update", clear)
+        assert observer.execute(balances, (team, *members)).fetchall() == [(None, None), (None, None)]
+
+
 async def test_a_capped_member_reset_does_not_overwrite_a_newer_period_edit(
     rollover_proxy: Gateway, monkeypatch: pytest.MonkeyPatch
 ) -> None:
