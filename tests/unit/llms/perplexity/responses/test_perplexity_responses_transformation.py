@@ -8,17 +8,29 @@ Source: litellm/llms/perplexity/responses/transformation.py
 """
 
 import json
+from typing import Final
 
 import httpx
 import pytest
+import respx
 
-
+import litellm
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.llms.base_llm.chat.transformation import BaseLLMException
 from litellm.llms.perplexity.responses.transformation import PerplexityResponsesConfig
 from litellm.types.llms.openai import ResponsesAPIOptionalRequestParams
 from litellm.types.utils import LlmProviders
 from litellm.utils import ProviderConfigManager
+
+_SUCCESS_RESPONSE: Final[dict[str, object]] = {
+    "id": "resp_tools_test",
+    "object": "response",
+    "created_at": 1700000000,
+    "status": "completed",
+    "model": "openai/gpt-5.2",
+    "output": [],
+    "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+}
 
 
 class TestPerplexityResponsesTransformation:
@@ -587,3 +599,29 @@ class TestPerplexityResponsesTransformation:
         assert result.type == "response.completed"
         assert result.response.usage.cost == 0.0003
         assert isinstance(result.response.usage.cost, float)
+
+
+@pytest.mark.asyncio
+async def test_aresponses_forwards_tool_choice_and_parallel_tool_calls_to_perplexity_without_drop_params(
+    monkeypatch: pytest.MonkeyPatch, respx_mock: respx.MockRouter
+) -> None:
+    monkeypatch.setattr(litellm, "disable_aiohttp_transport", True)
+    monkeypatch.setattr(litellm, "drop_params", False)
+    litellm.in_memory_llm_clients_cache.flush_cache()
+    upstream: Final = respx_mock.post("https://api.perplexity.ai/v1/responses").mock(
+        return_value=httpx.Response(200, json=_SUCCESS_RESPONSE)
+    )
+
+    await litellm.aresponses(
+        model="perplexity/openai/gpt-5.2",
+        api_base="https://api.perplexity.ai",
+        api_key="fake-api-key",
+        input="What is the weather in Vienna?",
+        tools=[{"type": "function", "name": "get_weather", "parameters": {"type": "object", "properties": {}}}],
+        tool_choice={"type": "function", "name": "get_weather"},
+        parallel_tool_calls=False,
+    )
+
+    sent: Final = json.loads(upstream.calls.last.request.content)
+    assert sent["tool_choice"] == {"type": "function", "name": "get_weather"}
+    assert sent["parallel_tool_calls"] is False

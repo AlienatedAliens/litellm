@@ -6,10 +6,15 @@ from Perplexity API responses.
 """
 
 import datetime
+import json
+from typing import Final
 from unittest.mock import Mock
 
 import httpx
 import pytest
+import respx
+
+import litellm
 
 # Add the project root to Python path
 
@@ -917,3 +922,104 @@ def test_transform_response_keeps_body_values_of_every_json_type_as_the_provider
     assert response.search_results == search_results
     assert [type(result) for result in response.search_results] == [dict, str, int]
     assert repr(response.usage.citation_tokens) == "18"
+
+
+_WEATHER_TOOL: Final = {
+    "type": "function",
+    "function": {
+        "name": "get_weather",
+        "description": "Get the weather for a city",
+        "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]},
+    },
+}
+_FUNCTION_CALL_RESPONSE: Final = {
+    "id": "resp_tools",
+    "object": "response",
+    "created_at": 1700000000,
+    "status": "completed",
+    "model": "anthropic/claude-sonnet-5-5",
+    "output": [
+        {
+            "type": "function_call",
+            "id": "fc_1",
+            "call_id": "call_1",
+            "name": "get_weather",
+            "arguments": '{"city": "Vienna"}',
+            "status": "completed",
+        }
+    ],
+    "usage": {"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
+}
+
+
+@pytest.mark.parametrize("drop_params", [False, True])
+@pytest.mark.asyncio
+async def test_agent_api_chat_completion_forwards_tools_to_the_responses_api_and_returns_tool_calls(
+    drop_params: bool, monkeypatch: pytest.MonkeyPatch, respx_mock: respx.MockRouter
+) -> None:
+    monkeypatch.setattr(litellm, "disable_aiohttp_transport", True)
+    monkeypatch.setattr(litellm, "drop_params", drop_params)
+    litellm.in_memory_llm_clients_cache.flush_cache()
+    upstream: Final = respx_mock.post("https://api.perplexity.ai/v1/responses").mock(
+        return_value=httpx.Response(200, json=_FUNCTION_CALL_RESPONSE)
+    )
+
+    response: Final = await litellm.acompletion(
+        model="perplexity/anthropic/claude-sonnet-5-5",
+        api_key="fake-api-key",
+        messages=[{"role": "user", "content": "What is the weather in Vienna?"}],
+        tools=[_WEATHER_TOOL],
+        tool_choice="auto",
+        parallel_tool_calls=False,
+    )
+
+    sent: Final = json.loads(upstream.calls.last.request.content)
+    assert [tool["name"] for tool in sent["tools"]] == ["get_weather"]
+    assert sent["tool_choice"] == "auto"
+    assert sent["parallel_tool_calls"] is False
+    tool_calls: Final = response.choices[0].message.tool_calls
+    assert [(call.function.name, json.loads(call.function.arguments)) for call in tool_calls] == [
+        ("get_weather", {"city": "Vienna"})
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sonar_chat_completion_still_rejects_tools_without_drop_params(
+    monkeypatch: pytest.MonkeyPatch, respx_mock: respx.MockRouter
+) -> None:
+    monkeypatch.setattr(litellm, "drop_params", False)
+    upstream: Final = respx_mock.post("https://api.perplexity.ai/chat/completions").mock(
+        return_value=httpx.Response(200, json=_PERPLEXITY_COMPLETION)
+    )
+
+    with pytest.raises(litellm.UnsupportedParamsError, match="tools"):
+        await litellm.acompletion(
+            model="perplexity/sonar",
+            api_key="fake-api-key",
+            messages=[{"role": "user", "content": "What is the weather in Vienna?"}],
+            tools=[_WEATHER_TOOL],
+        )
+
+    assert upstream.call_count == 0
+
+
+@pytest.mark.parametrize(
+    ("model", "takes_tools"),
+    [
+        ("anthropic/claude-sonnet-5-5", True),
+        ("perplexity/anthropic/claude-sonnet-5-5", True),
+        ("preset/pro-search", True),
+        ("vendor/model-the-cost-map-does-not-list", True),
+        ("sonar", False),
+        ("perplexity/sonar", False),
+        ("sonar-model-the-cost-map-does-not-list", False),
+    ],
+)
+def test_only_agent_api_models_list_tool_params_as_supported(model: str, takes_tools: bool) -> None:
+    supported: Final = litellm.get_supported_openai_params(model=model, custom_llm_provider="perplexity") or []
+
+    assert {param: param in supported for param in ("tools", "tool_choice", "parallel_tool_calls")} == {
+        "tools": takes_tools,
+        "tool_choice": takes_tools,
+        "parallel_tool_calls": takes_tools,
+    }

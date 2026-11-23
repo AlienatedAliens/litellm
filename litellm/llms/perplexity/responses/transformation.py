@@ -31,6 +31,8 @@ class PerplexityResponsesConfig(OpenAIResponsesAPIConfig):
             "temperature",
             "top_p",
             "tools",
+            "tool_choice",
+            "parallel_tool_calls",
             "reasoning",
             "instructions",
             "models",
