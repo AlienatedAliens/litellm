@@ -8,6 +8,8 @@ pub use jwt::{
 };
 pub use key::KeyDenial;
 
+use crate::routes::RouteNotExposed;
+
 const NOT_PREMIUM_USER: &str = "You must be a LiteLLM Enterprise user to use this feature. If you have a license please \
 set `LITELLM_LICENSE` in your env. Get a 7 day trial key here: https://www.litellm.ai/enterprise#trial. \n\
 Pricing: https://www.litellm.ai/#pricing";
@@ -90,10 +92,17 @@ pub enum PremiumRequired {
 /// A request the proxy refuses before it reads a credential.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum RequestDenial {
-    #[error("Access forbidden: IP address {address} not allowed.")]
-    AddressNotAllowed { address: String },
-    #[error("Access forbidden: Route {route} not allowed")]
-    RouteNotAllowed { route: String },
+    #[error(transparent)]
+    Address(#[from] AddressNotAllowed),
+    #[error(transparent)]
+    Route(#[from] RouteNotExposed),
+}
+
+/// An address the proxy's allowlist leaves out.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("Access forbidden: IP address {address} not allowed.")]
+pub struct AddressNotAllowed {
+    pub address: String,
 }
 
 /// `litellm.BudgetExceededError`, from the core's own comparison or as a host-owned budget step reported it.

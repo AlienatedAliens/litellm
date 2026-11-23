@@ -1300,12 +1300,7 @@ async def pre_db_read_auth_checks(
     from litellm.proxy.auth import core  # noqa: PLC0415  # core imports this module
     from litellm.proxy.auth.denial import denial_error  # noqa: PLC0415  # denial imports this module
 
-    denial: Final = RustAuth.check_request(
-        route,
-        request.client.host if request.client is not None else None,
-        request.headers.get("x-forwarded-for"),
-        settings if settings is not None else core.proxy_settings(),
-    )
+    denial: Final = RustAuth.check_request(route, request, settings if settings is not None else core.proxy_settings())
     if denial is not None:
         raise denial_error(denial)
 

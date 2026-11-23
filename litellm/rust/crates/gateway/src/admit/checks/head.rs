@@ -24,8 +24,11 @@ pub(super) fn route(admit: &Admit, request: &Parts) -> Option<Reason> {
 
 /// A route `general_settings.allowed_routes` leaves out, which Python refuses in its own words.
 pub(super) fn allowed(admit: &Admit, request: &Parts) -> Option<Reason> {
-    (!admit.request_policy.permits_route(request.uri.path()))
-        .then(|| Reason::new(Refused::Route, "general_settings.allowed_routes"))
+    admit
+        .exposed_routes
+        .permits(request.uri.path())
+        .err()
+        .map(|_| Reason::new(Refused::Route, "general_settings.allowed_routes"))
 }
 
 pub(super) fn headers(admit: &Admit, request: &Parts) -> Option<Reason> {

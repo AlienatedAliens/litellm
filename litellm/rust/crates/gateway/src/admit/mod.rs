@@ -14,7 +14,7 @@ use axum::{body::Body, extract::Request, http::request::Parts};
 use litellm_config::{Config, Environment};
 use litellm_core_utils::get_llm_provider_logic::LlmProviders;
 use litellm_gateway_auth::{Auth, Authenticated, Preauthenticated};
-use litellm_gateway_auth_core::{authz::Layer, request_policy};
+use litellm_gateway_auth_core::{ExposedRoutes, authz::Layer};
 use litellm_gateway_inference::{JsonObject, routing};
 use litellm_model_catalog::CostMap;
 use litellm_router_core::{Router, registry::DeploymentFilter};
@@ -80,7 +80,7 @@ pub struct Admit {
     /// served and what a call served there asks of its host.
     router: Router,
     /// The proxy's own route allowlist, read by the rule the Python proxy reads it with.
-    request_policy: request_policy::Settings,
+    exposed_routes: ExposedRoutes,
     auth: Auth<NativeRows>,
     /// The native app's inference, which tells whether a caller may call the model it asks for.
     /// `None` leaves every caller with a model list to Python.
@@ -162,7 +162,7 @@ impl Admit {
     fn built(config: &Config, router: Router, deployed: Vec<Deployed>) -> Self {
         Self {
             router,
-            request_policy: request_policy::Settings::new(&config.general_settings),
+            exposed_routes: ExposedRoutes::new(&config.general_settings),
             auth: host::auth::auth(config, None),
             config: config.clone(),
             environment: Environment::default(),

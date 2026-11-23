@@ -7009,6 +7009,7 @@ def _request_from(peer: str | None, forwarded_for: str | None = None) -> Request
         ({"allowed_ips": ["10.0.0.1"], "use_x_forwarded_for": True}, "10.0.0.1", "10.0.0.9", "10.0.0.9"),
         ({"allowed_ips": ["10.0.0.9"], "use_x_forwarded_for": True}, "10.0.0.1", "10.0.0.9", None),
         ({"allowed_ips": ["10.0.0.1"], "use_x_forwarded_for": True}, "10.0.0.1", None, None),
+        ({"allowed_ips": ["10.0.0.9"], "use_x_forwarded_for": "true"}, "10.0.0.1", "10.0.0.9", "10.0.0.1"),
     ],
     ids=[
         "no_allowlist",
@@ -7020,6 +7021,7 @@ def _request_from(peer: str | None, forwarded_for: str | None = None) -> Request
         "forwarded_header_replaces_peer",
         "forwarded_header_listed",
         "no_forwarded_header_falls_back_to_peer",
+        "forwarded_header_not_read_under_a_quoted_flag",
     ],
 )
 async def test_the_ip_allowlist_refuses_a_client_it_does_not_list(
@@ -7072,4 +7074,13 @@ async def test_the_proxy_route_allowlist_refuses_a_route_it_does_not_list(
     assert (refusal.value.status_code, refusal.value.detail) == (
         403,
         f"Access forbidden: Route {_GATED_ROUTE} not allowed",
+    )
+
+
+async def test_a_request_with_no_client_or_headers_passes_when_no_ip_allowlist_is_set() -> None:
+    await pre_db_read_auth_checks(
+        request=Request({"type": "http"}),
+        request_data={},
+        route=_GATED_ROUTE,
+        settings=_gate_settings({"allowed_routes": [_GATED_ROUTE]}),
     )

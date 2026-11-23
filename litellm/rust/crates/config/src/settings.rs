@@ -120,8 +120,8 @@ pub struct GeneralSettings {
     pub allow_client_side_credentials: bool,
     pub public_routes: Option<RouteList>,
     pub allowed_ips: Option<Lenient<Box<[String]>>>,
-    #[serde_as(as = "LaxBool")]
-    pub use_x_forwarded_for: Option<bool>,
+    #[serde_as(as = "IsTrue")]
+    pub use_x_forwarded_for: bool,
     pub allowed_routes: Option<RouteList>,
     pub custom_auth: Option<String>,
     pub litellm_key_header_name: Option<String>,
@@ -188,7 +188,7 @@ impl Default for GeneralSettings {
             allow_client_side_credentials: false,
             public_routes: None,
             allowed_ips: None,
-            use_x_forwarded_for: None,
+            use_x_forwarded_for: false,
             allowed_routes: None,
             custom_auth: None,
             litellm_key_header_name: None,
