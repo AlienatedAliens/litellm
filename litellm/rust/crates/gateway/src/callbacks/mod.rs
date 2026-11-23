@@ -22,7 +22,7 @@ use parking_lot::Mutex;
 use serde_json::{Map, Value};
 use strum::VariantArray;
 
-use self::fields::Known;
+use self::fields::{Charged, Known};
 use crate::host::NativeRows;
 
 /// A hook the gateway runs for a call.
@@ -161,6 +161,7 @@ impl Callbacks {
         self: &Arc<Self>,
         identity: &Authenticated<NativeRows>,
         call_type: CallType,
+        call_id: Option<&str>,
     ) -> Call {
         Call {
             states: self
@@ -172,7 +173,11 @@ impl Callbacks {
                 })
                 .collect(),
             callbacks: self.clone(),
-            known: Mutex::new(Known::of(call_type)),
+            known: Mutex::new(Known::of(
+                call_type,
+                Charged::of(identity),
+                call_id.map(str::to_owned),
+            )),
         }
     }
 }
@@ -435,8 +440,11 @@ mod tests {
 
     async fn call(callbacks: Vec<Arc<Scripted>>) -> Call {
         let callbacks = callbacks.into_iter().map(registered).collect();
-        Arc::new(Callbacks::new(callbacks).unwrap())
-            .begin(&crate::test_support::master(), CallType::AnthropicMessages)
+        Arc::new(Callbacks::new(callbacks).unwrap()).begin(
+            &crate::test_support::master(),
+            CallType::AnthropicMessages,
+            None,
+        )
     }
 
     fn body() -> Map<String, Value> {
@@ -446,7 +454,10 @@ mod tests {
     fn served() -> ServedCall {
         ServedCall {
             model_group: "claude".to_owned(),
+            deployment: None,
+            response_id: None,
             usage: None,
+            first_event: None,
         }
     }
 
@@ -569,11 +580,11 @@ mod tests {
         );
         let caller = crate::test_support::master();
         callbacks
-            .begin(&caller, CallType::AnthropicMessages)
+            .begin(&caller, CallType::AnthropicMessages, None)
             .failed()
             .await;
         callbacks
-            .begin(&caller, CallType::AnthropicMessages)
+            .begin(&caller, CallType::AnthropicMessages, None)
             .failed()
             .await;
 
@@ -598,7 +609,7 @@ mod tests {
         let started_at = 7;
 
         callbacks
-            .begin(&caller, CallType::AnthropicMessages)
+            .begin(&caller, CallType::AnthropicMessages, None)
             .failed()
             .await;
 

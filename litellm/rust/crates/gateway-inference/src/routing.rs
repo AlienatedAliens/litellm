@@ -55,8 +55,14 @@ pub trait Host: Send + Sync + Sized + 'static {
         identity: &'a Authenticated<Self::Rows>,
     ) -> impl Iterator<Item = Layer<'a>>;
 
-    /// The callback hooks of one call `identity` makes on the `call_type` route.
-    fn hooks(&self, identity: &Authenticated<Self::Rows>, call_type: CallType) -> Self::Hooks;
+    /// The callback hooks of one call `identity` makes on the `call_type` route, under the
+    /// request's `x-litellm-call-id`.
+    fn hooks(
+        &self,
+        identity: &Authenticated<Self::Rows>,
+        call_type: CallType,
+        call_id: Option<&str>,
+    ) -> Self::Hooks;
 
     /// router-core's host for one call that runs `route` on each attempt for `identity`.
     fn router_host<'a, A: RouteAttempt>(
