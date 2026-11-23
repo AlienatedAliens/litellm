@@ -4153,6 +4153,7 @@ dependencies = [
  "litellm-yaml",
  "parking_lot",
  "rand 0.8.7",
+ "regex",
  "rstest",
  "rustls 0.23.42",
  "serde",

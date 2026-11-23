@@ -143,12 +143,14 @@ impl Told {
 /// Serves one call of the `call_type` route with the host's hooks around it: `serve` runs on the
 /// body the pre-call hook left, a complete answer is logged off the request, as the proxy logs
 /// it after it went out, and a call that ends on an error, a refusal by that hook included,
-/// tells the hooks it failed. `call_id` is the request's `x-litellm-call-id`.
+/// tells the hooks it failed. `call_id` is the request's `x-litellm-call-id`, and `headers` the ones
+/// it came with.
 pub(crate) async fn around<H, F, Fut>(
     gateway: &Gateway<H>,
     identity: &Authenticated<H::Rows>,
     call_type: CallType,
     call_id: Option<&str>,
+    headers: &HeaderMap,
     body: Map<String, Value>,
     serve: F,
 ) -> Result<Response, Ended>
@@ -157,7 +159,7 @@ where
     F: FnOnce(Arc<H::Hooks>, Map<String, Value>) -> Fut,
     Fut: Future<Output = Result<Answer, Ended>>,
 {
-    let hooks = Arc::new(gateway.host.hooks(identity, call_type, call_id));
+    let hooks = Arc::new(gateway.host.hooks(identity, call_type, call_id, headers));
     let served = match hooks.pre_call(body).await {
         Ok(body) => serve(hooks.clone(), body).await,
         Err(ended) => Err(ended.into()),

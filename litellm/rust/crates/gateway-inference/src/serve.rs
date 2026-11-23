@@ -119,7 +119,16 @@ where
     let served = match body {
         Ok(body) => {
             let call_id = call.request_id.as_deref();
-            hooks::around(gateway, identity, E::CALL_TYPE, call_id, body, serve).await
+            hooks::around(
+                gateway,
+                identity,
+                E::CALL_TYPE,
+                call_id,
+                &call.headers,
+                body,
+                serve,
+            )
+            .await
         }
         Err(error) => Err(Ended::from(error)),
     };

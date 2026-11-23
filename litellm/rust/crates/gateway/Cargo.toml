@@ -58,6 +58,7 @@ litellm-tracing.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 rand.workspace = true
+regex.workspace = true
 strum.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["signal", "sync"] }

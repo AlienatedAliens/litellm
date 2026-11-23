@@ -8,6 +8,8 @@
 
 use std::{future::Future, time::Duration};
 
+use axum::http::HeaderMap;
+
 use futures_util::{StreamExt, stream};
 use litellm_config::LitellmRole;
 use litellm_gateway_auth::Authenticated;
@@ -56,12 +58,13 @@ pub trait Host: Send + Sync + Sized + 'static {
     ) -> impl Iterator<Item = Layer<'a>>;
 
     /// The callback hooks of one call `identity` makes on the `call_type` route, under the
-    /// request's `x-litellm-call-id`.
+    /// request's `x-litellm-call-id`, with the `headers` it came with.
     fn hooks(
         &self,
         identity: &Authenticated<Self::Rows>,
         call_type: CallType,
         call_id: Option<&str>,
+        headers: &HeaderMap,
     ) -> Self::Hooks;
 
     /// router-core's host for one call that runs `route` on each attempt for `identity`.

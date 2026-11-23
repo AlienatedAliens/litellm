@@ -17,6 +17,8 @@ pub use spend_log::NativeSpendLogHost;
 
 use std::sync::Arc;
 
+use axum::http::HeaderMap;
+
 use litellm_gateway_auth::Authenticated;
 use litellm_gateway_auth_core::{Caller, authz::Layer};
 use litellm_gateway_inference::{
@@ -66,8 +68,9 @@ impl Host for NativeHost {
         identity: &Authenticated<NativeRows>,
         call_type: CallType,
         call_id: Option<&str>,
+        headers: &HeaderMap,
     ) -> callbacks::Call {
-        self.callbacks.begin(identity, call_type, call_id)
+        self.callbacks.begin(identity, call_type, call_id, headers)
     }
 
     fn router_host<'a, A: RouteAttempt>(

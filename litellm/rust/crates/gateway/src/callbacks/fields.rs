@@ -127,7 +127,7 @@ fn route(call_type: CallType) -> &'static str {
 pub(super) struct Known {
     call_type: CallType,
     call_id: Option<String>,
-    /// Python's `litellm_trace_id`, which groups a row that names no session.
+    /// Python's `litellm_trace_id`, which the spend log row names as its session.
     trace_id: String,
     charged: Charged,
     start: SystemTime,
@@ -190,11 +190,16 @@ fn usage(used: &ChatCompletionsUsage) -> Usage {
 }
 
 impl Known {
-    pub(super) fn of(call_type: CallType, charged: Charged, call_id: Option<String>) -> Self {
+    pub(super) fn of(
+        call_type: CallType,
+        charged: Charged,
+        call_id: Option<String>,
+        trace_id: String,
+    ) -> Self {
         Self {
             call_type,
             call_id,
-            trace_id: uuid::Uuid::new_v4().to_string(),
+            trace_id,
             charged,
             start: SystemTime::now(),
             api_call_start: None,
@@ -481,7 +486,12 @@ mod tests {
     use super::*;
 
     fn known() -> Known {
-        let mut known = Known::of(CallType::AnthropicMessages, Charged::default(), None);
+        let mut known = Known::of(
+            CallType::AnthropicMessages,
+            Charged::default(),
+            None,
+            "trace-1".to_owned(),
+        );
         known.hold(Map::from_iter([("model".to_owned(), json!("claude"))]));
         known
     }
@@ -588,6 +598,7 @@ mod tests {
             CallType::AnthropicMessages,
             Charged::default(),
             Some("call-1".to_owned()),
+            "trace-1".to_owned(),
         );
         match served {
             Some(served) => known.serve(served),

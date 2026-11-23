@@ -10,6 +10,7 @@ pub mod model_capacity;
 pub mod parallel_request_limiter;
 pub mod spend_log;
 mod spend_log_input;
+mod trace;
 
 use std::sync::Arc;
 
@@ -181,6 +182,7 @@ impl Callbacks {
         identity: &Authenticated<NativeRows>,
         call_type: CallType,
         call_id: Option<&str>,
+        headers: &HeaderMap,
     ) -> Call {
         Call {
             states: self
@@ -196,6 +198,7 @@ impl Callbacks {
                 call_type,
                 Charged::of(identity),
                 call_id.map(str::to_owned),
+                trace::of(headers),
             )),
         }
     }
@@ -470,6 +473,7 @@ mod tests {
             &crate::test_support::master(),
             CallType::AnthropicMessages,
             None,
+            &HeaderMap::new(),
         )
     }
 
@@ -606,11 +610,21 @@ mod tests {
         );
         let caller = crate::test_support::master();
         callbacks
-            .begin(&caller, CallType::AnthropicMessages, None)
+            .begin(
+                &caller,
+                CallType::AnthropicMessages,
+                None,
+                &HeaderMap::new(),
+            )
             .failed()
             .await;
         callbacks
-            .begin(&caller, CallType::AnthropicMessages, None)
+            .begin(
+                &caller,
+                CallType::AnthropicMessages,
+                None,
+                &HeaderMap::new(),
+            )
             .failed()
             .await;
 
@@ -635,7 +649,12 @@ mod tests {
         let started_at = 7;
 
         callbacks
-            .begin(&caller, CallType::AnthropicMessages, None)
+            .begin(
+                &caller,
+                CallType::AnthropicMessages,
+                None,
+                &HeaderMap::new(),
+            )
             .failed()
             .await;
 
@@ -702,6 +721,37 @@ mod tests {
         assert_eq!(
             header.as_ref().and_then(|(_, value)| value.to_str().ok()),
             sent
+        );
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn a_served_calls_spend_log_is_grouped_under_the_callers_session() {
+        let session = "e96634a3-fa28-4083-b354-55542e2dca01";
+        let headers = HeaderMap::from_iter([(
+            HeaderName::from_static("x-claude-code-session-id"),
+            HeaderValue::from_static(session),
+        )]);
+        let call = Arc::new(Callbacks::default()).begin(
+            &crate::test_support::master(),
+            CallType::AnthropicMessages,
+            None,
+            &headers,
+        );
+        call.succeeded(served()).await;
+        let input = call.known.lock().input(
+            Hook::AttemptEnded,
+            litellm_callbacks::FieldSet::of(&[litellm_callbacks::Field::SpendLogInput]),
+        );
+        let logged = input
+            .fields
+            .raw(litellm_callbacks::Field::SpendLogInput)
+            .unwrap()
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            logged["row"]["row"]["kwargs"]["litellm_trace_id"],
+            json!(session)
         );
     }
 }
