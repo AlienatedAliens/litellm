@@ -16,11 +16,14 @@ use litellm_redis_store::{
     spend_counters::SpendCounters,
     system_clock,
 };
-use litellm_repositories::{Database, KeyRepository, ObjectPermissionRepository};
+use litellm_repositories::{
+    Database, GatewayRequestRepository, KeyRepository, ObjectPermissionRepository,
+};
 use tokio::runtime::Handle;
 
 use crate::{
     Error, Gateway, Inference, KeyLimiter, RedisClients, Resources, db,
+    gateway_requests::{Flusher, GatewayRequests},
     host::{
         self, NativeRows,
         auth::{AuthStore, KEY_TTL},
@@ -42,6 +45,9 @@ pub struct AppState {
     pub key_limiter: Arc<KeyLimiter>,
     /// The config's `environment_variables` in front of the process environment.
     pub environment: Arc<dyn Lookup + Send + Sync>,
+    /// The gateway request counts the request volume middleware records and the job that writes
+    /// them. `None` without a database.
+    pub gateway_requests: Option<Arc<Flusher>>,
 }
 
 impl AppState {
@@ -61,10 +67,19 @@ impl AppState {
             gateway: inference,
             key_limiter,
         } = crate::build_inference(config, environment, resources, routing, &redis).await?;
-        let (database, keys) = db::connect(config, &resources.secrets)
+        let (database, connected) = db::connect(config, &resources.secrets)
             .await?
-            .map(|(pools, repositories)| (pools, Arc::new(keys(config, &redis, repositories))))
+            .map(|(pools, repositories)| {
+                let flusher = Flusher::start(
+                    Arc::new(GatewayRequests::new()),
+                    GatewayRequestRepository::new(repositories.clone()),
+                    environment,
+                );
+                let keys = Arc::new(keys(config, &redis, repositories));
+                (pools, (keys, Arc::new(flusher)))
+            })
             .unzip();
+        let (keys, gateway_requests) = connected.unzip();
         let entitlements = Arc::new(build_license(config, environment, resources).await);
         Ok(Self {
             inference,
@@ -74,6 +89,7 @@ impl AppState {
             entitlements,
             key_limiter,
             environment: resources.environment.clone(),
+            gateway_requests,
         })
     }
 
@@ -83,7 +99,11 @@ impl AppState {
         host::auth::auth(config, self.keys.clone())
     }
 
+    /// Writes the gateway request counts still in memory, then closes the database pools.
     pub async fn close(&self) {
+        if let Some(gateway_requests) = &self.gateway_requests {
+            gateway_requests.close().await;
+        }
         if let Some(database) = &self.database {
             database.close().await;
         }

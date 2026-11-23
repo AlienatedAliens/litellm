@@ -56,6 +56,7 @@ fn global(router: axum::Router) -> axum::Router {
         &litellm_gateway::middleware::Settings::default(),
         Arc::new(Entitlements::Community),
         &litellm_gateway::middleware::InFlight::new(),
+        None,
     )
 }
 
@@ -73,6 +74,7 @@ fn without_stores(inference: Inference) -> AppState {
         keys: None,
         entitlements: Arc::new(Entitlements::Community),
         environment: Arc::new(litellm_env::ProcessEnvironment),
+        gateway_requests: None,
     }
 }
 

@@ -230,12 +230,17 @@ fn native(
 + use<> {
     use litellm_gateway::middleware::{InFlight, global, root_path};
     let entitlements = state.entitlements.clone();
+    let requests = state
+        .gateway_requests
+        .as_ref()
+        .map(|flusher| flusher.requests());
     let settings = middleware_settings(config, environment, &*state.environment);
     root_path::layer(root_path::Settings::from_environment(environment)).layer(global(
         litellm_gateway::router(state, config),
         &settings,
         entitlements,
         &InFlight::new(),
+        requests,
     ))
 }
 
