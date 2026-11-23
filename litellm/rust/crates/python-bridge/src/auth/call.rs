@@ -3,7 +3,7 @@ use jiff::Timestamp;
 use litellm_config::RouteList;
 use litellm_gateway_auth_core::{
     self as core, AgentIdentityFailure, BudgetExceeded, Error, Identity, JwtDenial, KeyHash,
-    Outcome, PublicDenial, Request, Token, VerifyDenial,
+    Outcome, PublicDenial, Request, TeamGrant, Token, VerifyDenial,
     authn::{
         jwt::{self, Expected, KeyMappingWrite, KeyOrigin, MappedJwt, MappedKey},
         key::{CachedTeam, KeyRecord, Keyed},
@@ -14,7 +14,7 @@ use litellm_gateway_auth_core::{
             ManagedAgent, ModelAccess, Org, Provisioning, RegisteredAgent, Team, TeamRead, User,
             UserRead,
         },
-        key::{KeyContext, KeyIdentity, Owner, TeamGrant},
+        key::{KeyContext, KeyOutcome, Owner},
     },
     plan::Plan,
     routes::passthrough::{ForwardedRoutes, PassthroughGrants},
@@ -587,7 +587,11 @@ impl KeyContextView {
 
 impl KeyContextView {
     fn new(py: Python<'_>, context: &KeyContext<PyRows>) -> PyResult<Py<Self>> {
-        let team = match &context.team {
+        let belongs = &context.belongs;
+        let end_user = belongs.end_user.as_ref().ok_or_else(|| {
+            PyRuntimeError::new_err("rust auth authenticated a key without reading its end user")
+        })?;
+        let team = match &belongs.team {
             TeamGrant::NoTeam => TeamGrantView::NoTeam(),
             TeamGrant::Loaded(team) => TeamGrantView::Loaded {
                 team: row(py, team),
@@ -600,10 +604,10 @@ impl KeyContextView {
             py,
             Self {
                 key: row(py, &context.key),
-                end_user: row(py, &context.end_user),
-                owner: rows(py, context.owner.as_ref()),
+                end_user: row(py, end_user),
+                owner: rows(py, belongs.user.as_ref()),
                 team: team.into_pyobject(py)?.into_any().unbind(),
-                project: rows(py, context.project.as_ref()),
+                project: rows(py, belongs.project.as_ref()),
             },
         )
     }
@@ -682,6 +686,11 @@ fn minted_org_id(origin: &KeyOrigin) -> Option<String> {
 
 impl IdentityView {
     fn jwt(py: Python<'_>, jwt: &JwtIdentity<PyRows>) -> PyResult<Self> {
+        let belongs = &jwt.belongs;
+        let team = match &belongs.team {
+            TeamGrant::Loaded(team) => Some(row(py, team)),
+            TeamGrant::NoTeam | TeamGrant::KeyCopy(_) => None,
+        };
         Ok(Self::Jwt {
             claims: to_py(py, &jwt.claims)?,
             is_proxy_admin: jwt.is_proxy_admin,
@@ -692,11 +701,11 @@ impl IdentityView {
             end_user_id: jwt.end_user_id.clone(),
             agent_id: jwt.agent_id.clone(),
             managed_agent: jwt.managed_agent.as_ref().map(|agent| row(py, &agent.row)),
-            user: rows(py, jwt.rows.user.as_ref()),
-            team: rows(py, jwt.rows.team.as_ref()),
-            membership: rows(py, jwt.rows.membership.as_ref()),
-            org: rows(py, jwt.rows.org.as_ref()),
-            end_user: rows(py, jwt.rows.end_user.as_ref()),
+            user: rows(py, belongs.user.as_ref()),
+            team,
+            membership: rows(py, belongs.membership.as_ref()),
+            org: rows(py, belongs.org.as_ref()),
+            end_user: rows(py, belongs.end_user.as_ref()),
         })
     }
 
@@ -729,19 +738,19 @@ impl IdentityView {
 
     fn new(py: Python<'_>, identity: &Identity<PyRows>) -> PyResult<Self> {
         Ok(match identity {
-            Identity::Key(KeyIdentity::NoMasterKey { token }) => Self::NoMasterKey {
+            Identity::Key(KeyOutcome::NoMasterKey { token }) => Self::NoMasterKey {
                 token: token.as_ref().map(|token| token.expose().to_owned()),
             },
-            Identity::Key(KeyIdentity::UserAuthRoute) => Self::UserAuthRoute(),
-            Identity::Key(KeyIdentity::CachedAdmin { key, end_user }) => Self::CachedAdmin {
+            Identity::Key(KeyOutcome::UserAuthRoute) => Self::UserAuthRoute(),
+            Identity::Key(KeyOutcome::CachedAdmin { key, end_user }) => Self::CachedAdmin {
                 key: row(py, key),
                 end_user: row(py, end_user),
             },
-            Identity::Key(KeyIdentity::MasterKey { hash, end_user }) => Self::MasterKey {
+            Identity::Key(KeyOutcome::MasterKey { hash, end_user }) => Self::MasterKey {
                 hash: hash.as_str().to_owned(),
                 end_user: row(py, end_user),
             },
-            Identity::Key(KeyIdentity::VirtualKey(context)) => Self::VirtualKey {
+            Identity::Key(KeyOutcome::VirtualKey(context)) => Self::VirtualKey {
                 context: KeyContextView::new(py, context)?,
             },
             Identity::MappedJwtKey(mapped, context) => Self::mapped(py, mapped, context)?,
